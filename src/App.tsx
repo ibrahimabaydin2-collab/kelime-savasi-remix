@@ -22,7 +22,7 @@ import SettingsModal, { AppSettings } from './components/SettingsModal.js';
 import AuthScreen from './components/AuthScreen.js';
 import BadgeUnlockedModal from './components/BadgeUnlockedModal.js';
 import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, db } from './lib/firebase.js';
-import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types.js';
 import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home } from 'lucide-react';
 import { getRandomWord, isWordInCuratedList, getDailyWordAndLength, COMMON_TURKISH_WORDS, CLEANED_TURKISH_WORDS } from './data/wordlist.js';
@@ -1053,6 +1053,7 @@ export default function App() {
   const wasOnlineRef = useRef<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const matchUnsubscribeRef = useRef<(() => void) | null>(null);
+  const queueUnsubscribeRef = useRef<(() => void) | null>(null);
   const pendingMatchmakingRef = useRef<number | null>(null);
   const justLoggedInUidRef = useRef<string | null>(null);
 
@@ -2987,68 +2988,211 @@ export default function App() {
       return;
     }
 
-    // Auto-reconnect if socket is not connected or in OPEN state
-    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      showToast('Sunucu bağlantısı kontrol ediliyor, lütfen bekleyin...', 'info');
-      setReconnectCounter((prev) => prev + 1);
-
-      // Poll up to 3 seconds for socket connection to open
-      let connected = false;
-      for (let i = 0; i < 15; i++) {
-        await new Promise((res) => setTimeout(res, 200));
-        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          connected = true;
-          break;
+    if (matchmakingStatus === 'queued') {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        try {
+          socketRef.current.send(JSON.stringify({ type: 'leave_matchmaking' }));
+        } catch (e) {
+          console.error("Error sending leave_matchmaking over WS:", e);
         }
       }
-
-      if (!connected) {
-        showToast('Sunucu bağlantısı kurulamadı. Lütfen internet bağlantınızı kontrol ediniz.', 'error');
-        return;
-      }
-    }
-
-    if (matchmakingStatus === 'queued') {
-      socketRef.current.send(JSON.stringify({
-        type: 'leave_matchmaking'
-      }));
       setMatchmakingStatus('idle');
+      if (queueUnsubscribeRef.current) {
+        queueUnsubscribeRef.current();
+        queueUnsubscribeRef.current = null;
+      }
       if (profile && profile.id) {
+        deleteDoc(doc(db, 'matchmaking_queue', profile.id)).catch(() => {});
         clearMatchmakingState(profile.id).catch((err) => {
           console.warn('Database cleanup failed in handleStartMatchmaking leave:', err);
         });
       }
-    } else {
-      // Deduct 1 gold entry fee for Canlı Oyun
-      const hasGold = await deductGold(1);
-      if (!hasGold) return;
+      showToast('Eşleşme araması iptal edildi.', 'info');
+      return;
+    }
 
-      // RADICAL CLEANUP BEFORE STARTING MATCHMAKING
-      console.log("Radical matchmaking starting: performing complete database and socket cleanup first...");
-      setMatchmakingStatus('idle');
-      setActiveMatch(null);
-      setGameStatus('idle');
-      setAttempts([]);
-      setCurrentAttempt('');
-      setRevealedHints({});
-      setActiveWordSuggestion(null);
-      
-      if (profile && profile.id) {
-        clearMatchmakingState(profile.id).catch((err) => {
-          console.warn('Database cleanup failed in handleStartMatchmaking join:', err);
-        });
+    // Deduct 1 gold entry fee for Canlı Oyun
+    const hasGold = await deductGold(1);
+    if (!hasGold) return;
+
+    // RADICAL CLEANUP BEFORE STARTING MATCHMAKING
+    console.log("Radical matchmaking starting: performing complete database and socket cleanup first...");
+    setMatchmakingStatus('queued');
+    setActiveMatch(null);
+    setGameStatus('idle');
+    setAttempts([]);
+    setCurrentAttempt('');
+    setRevealedHints({});
+    setActiveWordSuggestion(null);
+    
+    if (queueUnsubscribeRef.current) {
+      queueUnsubscribeRef.current();
+      queueUnsubscribeRef.current = null;
+    }
+
+    if (profile && profile.id) {
+      clearMatchmakingState(profile.id).catch((err) => {
+        console.warn('Database cleanup failed in handleStartMatchmaking join:', err);
+      });
+    }
+
+    const targetLen = matchWordsCount || duelWordLength || 5;
+
+    // Send WebSocket join if available
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      try {
+        socketRef.current.send(JSON.stringify({
+          type: 'join_matchmaking',
+          wordLength: targetLen,
+          id: profile.id,
+          name: profile.name || 'Oyuncu',
+          avatarUrl: profile.avatarUrl || ''
+        }));
+      } catch (e) {
+        console.warn("WebSocket join attempt failed:", e);
       }
+    } else {
+      // Reconnect WebSocket in background
+      setReconnectCounter((prev) => prev + 1);
+    }
 
-      const targetLen = matchWordsCount || duelWordLength || 5;
-      // No redundant leave messages or timeout! Connect immediately to prevent race conditions.
-      socketRef.current.send(JSON.stringify({
-        type: 'join_matchmaking',
-        wordLength: targetLen,
+    // Firestore Real-time Matchmaking Queue
+    try {
+      const myQueueRef = doc(db, 'matchmaking_queue', profile.id);
+      const queueData = {
         id: profile.id,
+        playerId: profile.id,
         name: profile.name || 'Oyuncu',
-        avatarUrl: profile.avatarUrl || ''
-      }));
-      setMatchmakingStatus('queued');
+        avatarUrl: profile.avatarUrl || '',
+        wordLength: targetLen,
+        status: 'waiting',
+        createdAt: serverTimestamp(),
+        updatedAt: new Date().toISOString()
+      };
+
+      await setDoc(myQueueRef, queueData);
+
+      // Listen to our queue document for matchmaking results
+      queueUnsubscribeRef.current = onSnapshot(myQueueRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.status === 'matched' && data.matchId) {
+            console.log("[Firestore Matchmaking] Matched via Firestore snapshot! Match ID:", data.matchId);
+            const matchLen = data.wordLength || targetLen;
+            const word = data.correctWord || data.targetWord;
+            
+            setActiveMatch({
+              id: data.matchId,
+              matchId: data.matchId,
+              gameState: 'PLAYING',
+              status: 'playing',
+              targetWord: word,
+              correctWord: word,
+              player1: data.player1 || { id: profile.id, name: profile.name || 'Oyuncu', avatarUrl: profile.avatarUrl || '' },
+              player2: data.player2 || data.opponent || { id: 'opponent', name: 'Rakip', avatarUrl: '' },
+              players: data.players || {
+                [profile.id]: { id: profile.id, name: profile.name || 'Oyuncu', avatarUrl: profile.avatarUrl || '' },
+                [(data.opponent?.id || 'opponent')]: data.opponent || { id: 'opponent', name: 'Rakip' }
+              },
+              wordLength: matchLen
+            });
+            setTargetWord(word);
+            setWordLength(matchLen);
+            setAttempts([]);
+            setCurrentAttempt('');
+            setLetterStatuses({});
+            setGameStatus('playing');
+            setHasEnteredGame(true);
+            setMatchmakingStatus('idle');
+            setIsMatchmakingLocked(false);
+            showToast('Düello başladı! Aynı kelimeyi ilk bulan kazanır! ⚡', 'success');
+
+            deleteDoc(myQueueRef).catch(() => {});
+            if (queueUnsubscribeRef.current) {
+              queueUnsubscribeRef.current();
+              queueUnsubscribeRef.current = null;
+            }
+          }
+        }
+      });
+
+      // Search Firestore queue for waiting opponents
+      const q = query(
+        collection(db, 'matchmaking_queue'),
+        where('wordLength', '==', targetLen),
+        where('status', '==', 'waiting')
+      );
+
+      const querySnap = await getDocs(q);
+      const waitingDocs = querySnap.docs.filter(d => d.id !== profile.id);
+
+      if (waitingDocs.length > 0) {
+        const oppDoc = waitingDocs[0];
+        const oppData = oppDoc.data();
+        const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+        const word = turkishUpper(getRandomWord(targetLen, true));
+
+        console.log(`[Firestore Matchmaking] Match found in queue! Opponent: ${oppData.name}. Creating match ${matchId} with word ${word}`);
+
+        const matchPayload = {
+          id: matchId,
+          matchId,
+          wordLength: targetLen,
+          targetWord: word,
+          correctWord: word,
+          gameState: 'PLAYING',
+          status: 'playing',
+          createdAt: new Date().toISOString(),
+          player1: { id: oppData.playerId, name: oppData.name || 'Oyuncu', avatarUrl: oppData.avatarUrl || '' },
+          player2: { id: profile.id, name: profile.name || 'Oyuncu', avatarUrl: profile.avatarUrl || '' },
+          players: {
+            [oppData.playerId]: { id: oppData.playerId, name: oppData.name || 'Oyuncu', avatarUrl: oppData.avatarUrl || '', attempts: [], completed: false, won: false },
+            [profile.id]: { id: profile.id, name: profile.name || 'Oyuncu', avatarUrl: profile.avatarUrl || '', attempts: [], completed: false, won: false }
+          },
+          isGameOver: false,
+          winner: null
+        };
+
+        // Create match documents in Firestore
+        await setDoc(doc(db, 'matches', matchId), matchPayload);
+        await setDoc(doc(db, 'rooms', matchId), matchPayload);
+
+        // Notify opponent via their queue document
+        await updateDoc(doc(db, 'matchmaking_queue', oppData.playerId), {
+          status: 'matched',
+          matchId,
+          correctWord: word,
+          targetWord: word,
+          wordLength: targetLen,
+          player1: matchPayload.player1,
+          player2: matchPayload.player2,
+          players: matchPayload.players,
+          opponent: { id: profile.id, name: profile.name, avatarUrl: profile.avatarUrl }
+        }).catch((err) => {
+          console.warn("[Firestore Matchmaking] Failed updating opponent queue doc:", err);
+        });
+
+        // Launch match for ourselves
+        setActiveMatch(matchPayload);
+        setTargetWord(word);
+        setWordLength(targetLen);
+        setAttempts([]);
+        setCurrentAttempt('');
+        setLetterStatuses({});
+        setGameStatus('playing');
+        setHasEnteredGame(true);
+        setMatchmakingStatus('idle');
+        setIsMatchmakingLocked(false);
+        showToast('Rakip bulundu! Düello başladı! ⚡', 'success');
+
+        deleteDoc(myQueueRef).catch(() => {});
+        if (queueUnsubscribeRef.current) {
+          queueUnsubscribeRef.current();
+          queueUnsubscribeRef.current = null;
+        }
+      }
+    } catch (err) {
+      console.error("[Firestore Matchmaking] Error during queueing:", err);
     }
   };
 

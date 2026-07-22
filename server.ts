@@ -906,6 +906,20 @@ async function startServer() {
 
       console.log(`[Duel Server] Match ${matchId}: Player ${leftPlayer.name} disconnected. Player ${remainingPlayer.name} wins by forfeit!`);
 
+      setDoc(doc(db, 'matches', match.matchId), {
+        isGameOver: true,
+        status: 'finished',
+        gameState: 'finished',
+        winner: remainingPlayer.id,
+        winnerId: remainingPlayer.id,
+        finishedBy: remainingPlayer.id,
+        loser: leftPlayer.id,
+        winReason: 'opponent_left',
+        updatedAt: new Date().toISOString()
+      }, { merge: true }).catch(err => {
+        console.error('[Duel Server] Error updating Firestore match doc on disconnect:', err);
+      });
+
       // Notify remaining player
       sendWs(remainingPlayer.ws, {
         type: 'match_end',
@@ -995,6 +1009,32 @@ async function startServer() {
             socketToMatchIdMap.set(ws, matchId);
 
             console.log(`[Duel Server] Created match ${matchId} for ${matchObj.player1.name} vs ${matchObj.player2.name}. Word: ${correctWord}`);
+
+            // Persist match to Firestore database instantly
+            const initialFirestoreMatch = {
+              id: matchId,
+              matchId,
+              wordLength: length,
+              targetWord: correctWord,
+              correctWord,
+              gameState: 'PLAYING',
+              status: 'playing',
+              createdAt: new Date().toISOString(),
+              player1: { id: matchObj.player1.id, name: matchObj.player1.name, avatarUrl: matchObj.player1.avatarUrl },
+              player2: { id: matchObj.player2.id, name: matchObj.player2.name, avatarUrl: matchObj.player2.avatarUrl },
+              players: {
+                [matchObj.player1.id]: { id: matchObj.player1.id, name: matchObj.player1.name, avatarUrl: matchObj.player1.avatarUrl, attempts: [], completed: false, won: false },
+                [matchObj.player2.id]: { id: matchObj.player2.id, name: matchObj.player2.name, avatarUrl: matchObj.player2.avatarUrl, attempts: [], completed: false, won: false }
+              },
+              isGameOver: false,
+              winner: null
+            };
+            setDoc(doc(db, 'matches', matchId), initialFirestoreMatch, { merge: true }).catch(err => {
+              console.error('[Duel Server] Failed to save match to Firestore:', err);
+            });
+            setDoc(doc(db, 'rooms', matchId), initialFirestoreMatch, { merge: true }).catch(err => {
+              console.error('[Duel Server] Failed to save room to Firestore:', err);
+            });
 
             // State 1: WAITING
             const waitingPayload = {
@@ -1087,6 +1127,20 @@ async function startServer() {
             sender.attempts.push({ word: guessStr, result: feedback });
 
             console.log(`[Duel Server] Match ${matchId} WON by ${sender.name}! Word was ${match.correctWord}`);
+
+            setDoc(doc(db, 'matches', match.matchId), {
+              isGameOver: true,
+              status: 'finished',
+              gameState: 'finished',
+              winner: sender.id,
+              winnerId: sender.id,
+              finishedBy: sender.id,
+              loser: opponent.id,
+              winReason: 'correct_word',
+              updatedAt: new Date().toISOString()
+            }, { merge: true }).catch(err => {
+              console.error('[Duel Server] Error updating Firestore match doc on win:', err);
+            });
 
             // Send guess result to winning player
             sendWs(sender.ws, {
