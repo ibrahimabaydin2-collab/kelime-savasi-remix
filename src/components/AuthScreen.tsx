@@ -21,6 +21,37 @@ interface AuthScreenProps {
   onAuthComplete: (profile: UserProfile, firebaseUser: any) => void;
 }
 
+const safeLocalStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
+    } catch (e) {
+      console.warn('localStorage getItem blocked/unavailable:', e);
+    }
+    return null;
+  },
+  setItem: (key: string, value: string): void => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, value);
+      }
+    } catch (e) {
+      console.warn('localStorage setItem blocked/unavailable:', e);
+    }
+  },
+  removeItem: (key: string): void => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(key);
+      }
+    } catch (e) {
+      console.warn('localStorage removeItem blocked/unavailable:', e);
+    }
+  }
+};
+
 const AVATAR_PRESETS = [
   '⚔️', '🧠', '🐺', '🦁', '🧙‍♂️', '🦊', 
   '👾', '🦄', '⚡', '👑', '🎯', '🚀', 
@@ -153,7 +184,7 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
 
       if (user) {
         try {
-          localStorage.setItem('kelimesavasi_is_registered', 'true');
+          safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
         } catch (e) {}
         const profile = await fetchUserProfile(user.uid);
         if (profile) {
@@ -250,13 +281,13 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
 
       if (username.trim()) {
         try {
-          localStorage.setItem('saved_username', username.trim());
+          safeLocalStorage.setItem('saved_username', username.trim());
           const tempProfile = {
             name: username.trim(),
             avatarUrl: selectedAvatar || '🧠',
             nameSet: true
           };
-          localStorage.setItem('kelimesavasi_profile', JSON.stringify(tempProfile));
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(tempProfile));
         } catch (e) {
           console.warn(e);
         }
@@ -267,7 +298,7 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
 
       if (user) {
         try {
-          localStorage.setItem('kelimesavasi_is_registered', 'true');
+          safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
         } catch (e) {}
         const profile = await fetchUserProfile(user.uid);
         if (profile) {
@@ -342,17 +373,18 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
       }
 
       if (mode === 'guest') {
-        // Save the manual username and preset profile to local storage first so that the onAuthStateChanged listener picks it up immediately
+        const cleanName = username.trim();
+        // Save the manual username and preset profile to local storage first
         try {
-          localStorage.setItem('kelimesavasi_signing_in', 'true');
-          localStorage.setItem('kelimesavasi_is_registered', 'false');
-          localStorage.setItem('saved_username', username.trim());
+          safeLocalStorage.setItem('kelimesavasi_signing_in', 'true');
+          safeLocalStorage.setItem('kelimesavasi_is_registered', 'false');
+          safeLocalStorage.setItem('saved_username', cleanName);
           const tempProfile = {
-            name: username.trim(),
+            name: cleanName,
             avatarUrl: selectedAvatar,
             nameSet: true
           };
-          localStorage.setItem('kelimesavasi_profile', JSON.stringify(tempProfile));
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(tempProfile));
         } catch (e) {
           console.warn(e);
         }
@@ -363,7 +395,7 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
         // Create initial guest profile
         const initialProfile: UserProfile = {
           id: firebaseUser.uid,
-          name: username.trim(),
+          name: cleanName,
           avatarUrl: selectedAvatar,
           stats: {
             gamesPlayed: 0,
@@ -379,22 +411,32 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
           nameSet: true
         };
 
-        // Save to Firestore & local storage
-        await saveUserProfileToFirestore(initialProfile);
+        // Save complete profile to local storage immediately so it is instantly available in APK
+        try {
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(initialProfile));
+          safeLocalStorage.setItem('saved_username', cleanName);
+          safeLocalStorage.setItem('kelimesavasi_is_registered', 'false');
+        } catch (e) {}
+
+        // Non-blocking save to Firestore
+        saveUserProfileToFirestore(initialProfile).catch((err) => {
+          console.warn('Firestore guest profile save warning:', err);
+        });
+
         onAuthComplete(initialProfile, firebaseUser);
 
       } else if (mode === 'register') {
-        // Save the manual username and preset profile to local storage first so that the onAuthStateChanged listener picks it up immediately
+        const cleanName = username.trim();
         try {
-          localStorage.setItem('kelimesavasi_signing_in', 'true');
-          localStorage.setItem('kelimesavasi_is_registered', 'true');
-          localStorage.setItem('saved_username', username.trim());
+          safeLocalStorage.setItem('kelimesavasi_signing_in', 'true');
+          safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
+          safeLocalStorage.setItem('saved_username', cleanName);
           const tempProfile = {
-            name: username.trim(),
+            name: cleanName,
             avatarUrl: selectedAvatar,
             nameSet: true
           };
-          localStorage.setItem('kelimesavasi_profile', JSON.stringify(tempProfile));
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(tempProfile));
         } catch (e) {
           console.warn(e);
         }
@@ -405,7 +447,7 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
         // Create initial email profile
         const initialProfile: UserProfile = {
           id: firebaseUser.uid,
-          name: username.trim(),
+          name: cleanName,
           avatarUrl: selectedAvatar,
           stats: {
             gamesPlayed: 0,
@@ -421,12 +463,21 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
           nameSet: true
         };
 
-        await saveUserProfileToFirestore(initialProfile);
+        try {
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(initialProfile));
+          safeLocalStorage.setItem('saved_username', cleanName);
+          safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
+        } catch (e) {}
+
+        saveUserProfileToFirestore(initialProfile).catch((err) => {
+          console.warn('Firestore register profile save warning:', err);
+        });
+
         onAuthComplete(initialProfile, firebaseUser);
 
       } else if (mode === 'login') {
         try {
-          localStorage.setItem('kelimesavasi_is_registered', 'true');
+          safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
         } catch (e) {}
         // 3. Login with Email/Password
         const firebaseUser = await loginWithEmailAndPassword(email, password);
@@ -435,9 +486,11 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
         const fetchedProfile = await fetchUserProfile(firebaseUser.uid);
         
         if (fetchedProfile) {
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(fetchedProfile));
+          if (fetchedProfile.name) safeLocalStorage.setItem('saved_username', fetchedProfile.name);
           onAuthComplete(fetchedProfile, firebaseUser);
         } else {
-          // If no profile exists (unlikely, but fallback), generate a basic one
+          // If no profile exists, generate a basic one
           const fallbackProfile: UserProfile = {
             id: firebaseUser.uid,
             name: firebaseUser.email?.split('@')[0] || 'Oyuncu',
@@ -453,14 +506,17 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
             missions: [],
             dailyScore: 0,
             lastUpdated: new Date().toISOString(),
-            nameSet: false
+            nameSet: true
           };
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(fallbackProfile));
+          if (fallbackProfile.name) safeLocalStorage.setItem('saved_username', fallbackProfile.name);
+          saveUserProfileToFirestore(fallbackProfile).catch(err => console.warn(err));
           onAuthComplete(fallbackProfile, firebaseUser);
         }
       }
     } catch (err: any) {
       try {
-        localStorage.removeItem('kelimesavasi_signing_in');
+        safeLocalStorage.removeItem('kelimesavasi_signing_in');
       } catch (e) {}
       console.error('Auth error:', err);
       setFirebaseError(getFirebaseErrorMessage(err));

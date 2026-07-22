@@ -263,10 +263,14 @@ export async function fetchUserProfile(uid: string): Promise<UserProfile | null>
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       const localSaved = window.localStorage.getItem('kelimesavasi_profile');
+      const savedUsername = window.localStorage.getItem('saved_username');
       if (localSaved) {
         const parsed = JSON.parse(localSaved);
         if (parsed && (parsed.id === uid || parsed.uid === uid || parsed.id)) {
           console.log('Restored user profile from localStorage fallback.');
+          if ((!parsed.name || parsed.name === 'Oyuncu' || parsed.name === 'Kelime Oyuncusu') && savedUsername) {
+            parsed.name = savedUsername;
+          }
           return parsed as UserProfile;
         }
       }
@@ -329,12 +333,20 @@ export function matchesSearchTerm(userName: string, searchTerm: string): boolean
  */
 export async function saveUserProfileToFirestore(profile: UserProfile): Promise<void> {
   try {
-    if (auth.currentUser && profile.id !== auth.currentUser.uid) {
-      console.warn(`Skipping saveUserProfileToFirestore for profile ID ${profile.id} because it is different from currently authenticated user UID ${auth.currentUser.uid}`);
-      // Still update local storage so client-side state is perfectly synchronized
+    // Update browser local storage immediately FIRST so client-side state is always perfectly synchronized even offline/on mobile APK
+    try {
       if (typeof window !== 'undefined' && window.localStorage) {
         window.localStorage.setItem('kelimesavasi_profile', JSON.stringify(profile));
+        if (profile.name) {
+          window.localStorage.setItem('saved_username', profile.name.trim());
+        }
       }
+    } catch (lsErr) {
+      console.warn('LocalStorage save error in saveUserProfileToFirestore:', lsErr);
+    }
+
+    if (auth.currentUser && profile.id !== auth.currentUser.uid) {
+      console.warn(`Skipping saveUserProfileToFirestore for profile ID ${profile.id} because it is different from currently authenticated user UID ${auth.currentUser.uid}`);
       return;
     }
 
@@ -358,11 +370,6 @@ export async function saveUserProfileToFirestore(profile: UserProfile): Promise<
     // We await setDoc so we are 100% sure the write is committed to local cache/network
     await setDoc(userDocRef, dataToSave, { merge: true });
     console.log(`Successfully saved user profile to Firestore for UID ${profile.id} (${cleanName})`);
-
-    // Update browser local storage immediately so client-side state is always perfectly synchronized
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem('kelimesavasi_profile', JSON.stringify(profile));
-    }
   } catch (error) {
     console.error('Failed to save user profile:', error);
     handleFirestoreError(error, OperationType.WRITE, `users/${profile.id}`);

@@ -1043,6 +1043,7 @@ async function startServer() {
               gameState: 'WAITING',
               wordLength: length,
               correctWord,
+              targetWord: correctWord,
               player1: { id: matchObj.player1.id, name: matchObj.player1.name, avatarUrl: matchObj.player1.avatarUrl },
               player2: { id: matchObj.player2.id, name: matchObj.player2.name, avatarUrl: matchObj.player2.avatarUrl }
             };
@@ -1057,6 +1058,7 @@ async function startServer() {
               gameState: 'READY',
               wordLength: length,
               correctWord,
+              targetWord: correctWord,
               player1: { id: matchObj.player1.id, name: matchObj.player1.name, avatarUrl: matchObj.player1.avatarUrl },
               player2: { id: matchObj.player2.id, name: matchObj.player2.name, avatarUrl: matchObj.player2.avatarUrl }
             };
@@ -1074,6 +1076,7 @@ async function startServer() {
                   gameState: 'PLAYING',
                   wordLength: length,
                   correctWord,
+                  targetWord: correctWord,
                   player1: { id: matchObj.player1.id, name: matchObj.player1.name, avatarUrl: matchObj.player1.avatarUrl },
                   player2: { id: matchObj.player2.id, name: matchObj.player2.name, avatarUrl: matchObj.player2.avatarUrl }
                 };
