@@ -1961,12 +1961,14 @@ export default function App() {
           const matchData = snapshot.data();
           const isFinished = matchData.isGameOver === true || 
                              matchData.status === 'finished' || 
-                             matchData.gameState === 'finished';
+                             matchData.status === 'ended' ||
+                             matchData.gameState === 'finished' ||
+                             matchData.gameState === 'FINISHED';
           const winnerId = matchData.winner || matchData.winnerId || matchData.finishedBy;
 
-          if (isFinished && winnerId) {
+          if (isFinished) {
             console.log(`Instant match end condition met from Firestore. Winner is: ${winnerId}`);
-            handleInstantMatchEndRef.current(winnerId);
+            handleInstantMatchEndRef.current(winnerId || 'draw');
           }
         }
       }, (error) => {
@@ -3473,7 +3475,15 @@ export default function App() {
   };
 
   const opponent = activeMatch ? Object.values(activeMatch.players).find(p => (p as any).name !== profile.name) as any : null;
-  const isMatchEnded = !!(activeMatch && activeMatch.status === 'ended');
+  const isMatchEnded = !!(
+    activeMatch && (
+      activeMatch.status === 'ended' ||
+      activeMatch.status === 'finished' ||
+      activeMatch.isGameOver === true ||
+      activeMatch.gameState === 'FINISHED' ||
+      activeMatch.gameState === 'finished'
+    )
+  );
 
   // Triggers when 1v1 match ends (isMatchEnded turns true) or when user exits a match, loading AdMob asynchronously in the background and freeing layout calculations
   useEffect(() => {
@@ -3492,88 +3502,26 @@ export default function App() {
       // Force set isMatchEndedRef.current to true so keyboard listener ignores any events
       isMatchEndedRef.current = true;
 
-      // Identify Winner & Loser
-      const playersList = Object.entries(activeMatch.players);
-      let winnerId = '';
-      let winnerName = 'Bilinmeyen Oyuncu';
-      let winnerScore = 0;
-      let loserId = '';
-      let loserName = 'Bilinmeyen Oyuncu';
-      let loserScore = 0;
-
-      const winnerEntry = playersList.find(([_, pState]: [string, any]) => pState.won);
-      const bothCompleted = playersList.length === 2 && playersList.every(([_, pState]: [string, any]) => pState.completed);
-      const neitherWon = playersList.every(([_, pState]: [string, any]) => !pState.won);
-
-      if (activeMatch.winnerId === 'draw' || (bothCompleted && neitherWon)) {
-        winnerId = 'draw';
-        winnerName = 'Berabere';
-        winnerScore = 0;
-        loserId = 'draw';
-        loserName = 'Berabere';
-        loserScore = 0;
-      } else if (winnerEntry) {
-        winnerId = winnerEntry[0];
-        winnerName = (winnerEntry[1] as any).name || 'Oyuncu';
-        winnerScore = (winnerEntry[1] as any).score || 0;
-
-        const loserEntry = playersList.find(([pId, _]: [string, any]) => pId !== winnerId);
-        if (loserEntry) {
-          loserId = loserEntry[0];
-          loserName = (loserEntry[1] as any).name || 'Oyuncu';
-          loserScore = (loserEntry[1] as any).score || 0;
-        }
-      } else if (activeMatch.winnerId && activeMatch.winnerId !== 'draw') {
-        winnerId = activeMatch.winnerId;
-        const winnerPlayer = activeMatch.players[winnerId];
-        if (winnerPlayer) {
-          winnerName = (winnerPlayer as any).name || 'Oyuncu';
-          winnerScore = (winnerPlayer as any).score || 0;
-        }
-
-        const loserEntry = playersList.find(([pId, _]: [string, any]) => pId !== winnerId);
-        if (loserEntry) {
-          loserId = loserEntry[0];
-          loserName = (loserEntry[1] as any).name || 'Oyuncu';
-          loserScore = (loserEntry[1] as any).score || 0;
-        }
-      } else {
-        // Fallback or Tie
-        const sorted = [...playersList].sort((a: any, b: any) => (b[1].score || 0) - (a[1].score || 0));
-        if (sorted[0]) {
-          winnerId = sorted[0][0];
-          winnerName = (sorted[0][1] as any).name || 'Oyuncu';
-          winnerScore = (sorted[0][1] as any).score || 0;
-        }
-        if (sorted[1]) {
-          loserId = sorted[1][0];
-          loserName = (sorted[1][1] as any).name || 'Oyuncu';
-          loserScore = (sorted[1][1] as any).score || 0;
-        }
+      // Ensure word definition is fetched for match end card
+      const wordToUse = targetWord || activeMatch.targetWord || activeMatch.correctWord || '';
+      if (wordToUse) {
+        fetchTargetWordDefinition(wordToUse);
       }
 
       if (typeof window !== 'undefined' && (window as any).AndroidBridge) {
         try {
-          (window as any).AndroidBridge.loadAdBackground();
-          if ((window as any).AndroidBridge.redirectToResultActivity) {
-            console.log("Directing both players to native ResultActivity...");
-            (window as any).AndroidBridge.redirectToResultActivity(
-              winnerId,
-              winnerName,
-              winnerScore,
-              loserId,
-              loserName,
-              loserScore,
-              activeMatch.targetWord || '',
-              winnerId === profile.id // isWinner
-            );
+          if ((window as any).AndroidBridge.loadAdBackground) {
+            (window as any).AndroidBridge.loadAdBackground();
+          }
+          if ((window as any).AndroidBridge.preventAdLayoutLoops) {
+            (window as any).AndroidBridge.preventAdLayoutLoops();
           }
         } catch (e) {
           console.error("Error calling native AndroidBridge:", e);
         }
       }
     }
-  }, [isMatchEnded, activeMatch]);
+  }, [isMatchEnded, activeMatch, targetWord]);
 
 
 
@@ -4192,7 +4140,7 @@ export default function App() {
           )}
 
           {/* Waiting for Opponent Card */}
-          {!isMatchEnded && activeMatch && activeMatch.players[profile.id]?.completed && activeMatch.status !== 'ended' && (
+          {!isMatchEnded && activeMatch && activeMatch.players[profile.id]?.completed && (
             <div className="w-full max-w-sm mx-auto bg-slate-900/95 border border-amber-500/25 rounded-3xl p-5 text-center space-y-4 shadow-xl animate-scale-up" id="opponent-waiting-container">
               <div className="flex flex-col items-center">
                 <div className="relative">
@@ -4224,7 +4172,7 @@ export default function App() {
           )}
 
           {/* Multiplayer Results Card (Tek Tur Sonuç Ekranı) */}
-          {activeMatch && activeMatch.status === 'ended' && (
+          {activeMatch && isMatchEnded && (
             <div className="w-full max-w-sm sm:max-w-md mx-auto bg-slate-900/95 border-2 border-amber-500/30 rounded-3xl p-4 sm:p-5 text-center shadow-2xl animate-scale-up flex flex-col justify-between max-h-[85vh] overflow-hidden" id="multiplayer-results-container">
               {(() => {
                 const matchWinnerId = activeMatch.winnerId || activeMatch.winner || (
