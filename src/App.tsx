@@ -1060,8 +1060,44 @@ export default function App() {
   const handleManualReconnect = () => {
     addNetworkLog('info', 'Manuel yeniden bağlanma tetiklendi.');
     showToast('Sunucuya yeniden bağlanılıyor...', 'info');
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      showToast('İnternet bağlantınız kapalı. Lütfen ağınızı kontrol edin.', 'error');
+      setIsOnline(false);
+      return;
+    }
     setReconnectCounter((prev) => prev + 1);
   };
+
+  // Real-time Network & Browser Online / Offline Monitor
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log('[Network Monitor] Browser went ONLINE');
+      addNetworkLog('success', 'İnternet bağlantısı sağlandı.');
+      showToast('İnternet bağlantısı kuruldu.', 'success');
+      setIsOnline(true);
+      setReconnectCounter((prev) => prev + 1);
+    };
+
+    const handleOffline = () => {
+      console.log('[Network Monitor] Browser went OFFLINE');
+      addNetworkLog('error', 'İnternet bağlantısı kesildi (Çevrimdışı).');
+      showToast('İnternet bağlantısı kesildi! Çevrimdışısınız.', 'error');
+      setIsOnline(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Initial check on mount
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setIsOnline(false);
+    }
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [addNetworkLog]);
 
   // Apply dark mode to document element
   useEffect(() => {
@@ -1491,25 +1527,31 @@ export default function App() {
             } else if (data.type === 'match_joined') {
               setMatchmakingStatus('idle');
               setIsMatchmakingLocked(false);
+              const p1 = data.player1 || { id: 'p1', name: 'Oyuncu 1', avatarUrl: '' };
+              const p2 = data.player2 || { id: 'p2', name: 'Oyuncu 2', avatarUrl: '' };
+              const p1Id = p1.id || 'p1';
+              const p2Id = p2.id || 'p2';
               setActiveMatch({
                 id: data.matchId,
                 matchId: data.matchId,
                 gameState: 'WAITING',
-                player1: data.player1,
-                player2: data.player2,
+                player1: p1,
+                player2: p2,
                 players: {
-                  [data.player1.id]: data.player1,
-                  [data.player2.id]: data.player2
+                  [p1Id]: p1,
+                  [p2Id]: p2
                 },
                 wordLength: data.wordLength
               });
               setWordLength(data.wordLength);
             } else if (data.type === 'match_ready') {
+              const p1 = data.player1 || { id: 'p1', name: 'Oyuncu 1', avatarUrl: '' };
+              const p2 = data.player2 || { id: 'p2', name: 'Oyuncu 2', avatarUrl: '' };
               setActiveMatch((prev: any) => ({
                 ...prev,
                 gameState: 'READY',
-                player1: data.player1,
-                player2: data.player2
+                player1: p1,
+                player2: p2
               }));
               showToast('Rakip bağlandı! Oyun hazırlanıyor... ⚔️', 'info');
             } else if (data.type === 'match_start') {
@@ -1530,6 +1572,11 @@ export default function App() {
               setOpponentLeftDuringMatch(false);
               setShowCongratsModal(false);
 
+              const p1 = data.player1 || { id: 'p1', name: 'Oyuncu 1', avatarUrl: '' };
+              const p2 = data.player2 || { id: 'p2', name: 'Oyuncu 2', avatarUrl: '' };
+              const p1Id = p1.id || 'p1';
+              const p2Id = p2.id || 'p2';
+
               setActiveMatch({
                 id: data.matchId,
                 matchId: data.matchId,
@@ -1537,11 +1584,11 @@ export default function App() {
                 status: 'playing',
                 targetWord: target,
                 correctWord: target,
-                player1: data.player1,
-                player2: data.player2,
+                player1: p1,
+                player2: p2,
                 players: {
-                  [data.player1.id]: data.player1,
-                  [data.player2.id]: data.player2
+                  [p1Id]: p1,
+                  [p2Id]: p2
                 },
                 wordLength: matchLen
               });
@@ -1551,9 +1598,9 @@ export default function App() {
             } else if (data.type === 'guess_result') {
               setIsValidating(false);
               const guessWord = data.word;
-              const feedback: Array<'green' | 'orange' | 'grey'> = data.feedback.map((f: string) => 
+              const feedback: Array<'green' | 'orange' | 'grey'> = data.feedback ? data.feedback.map((f: string) => 
                 f === 'correct' ? 'green' : f === 'present' ? 'orange' : 'grey'
-              );
+              ) : [];
 
               setAttempts(prev => [...prev, { word: guessWord, feedback }]);
               setLetterStatuses(prev => {
@@ -1584,7 +1631,7 @@ export default function App() {
                 fetchTargetWordDefinition(target);
               }
 
-              const isWinner = data.winner === profile.id;
+              const isWinner = Boolean(profile?.id && data.winner === profile.id);
               const isOpponentLeft = data.winReason === 'opponent_left';
 
               if (isOpponentLeft) {

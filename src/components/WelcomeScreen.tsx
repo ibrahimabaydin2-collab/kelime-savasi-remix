@@ -730,10 +730,18 @@ export default function WelcomeScreen({
               <div className="space-y-3 bg-[#3D4756]/30 p-4 sm:p-4.5 rounded-[1.5rem] border border-white/5 text-left">
                 <div className="flex items-center justify-between border-b border-white/5 pb-2">
                   <span className="text-[9px] font-black text-amber-300 font-mono tracking-wider uppercase block">CANLI DÜELLO AYARLARI</span>
-                  <div className="flex items-center gap-1.5 text-[9px] font-mono font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full border border-emerald-500/30">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>{isOnline ? 'ONLINE CANLI' : 'BAĞLANIYOR'}</span>
-                  </div>
+                  <button
+                    onClick={onReconnect}
+                    className={`flex items-center gap-1.5 text-[9px] font-mono font-black px-2.5 py-1 rounded-full border transition-all cursor-pointer ${
+                      isOnline
+                        ? "text-emerald-400 bg-emerald-950/60 border-emerald-500/30 hover:bg-emerald-900/60"
+                        : "text-rose-400 bg-rose-950/60 border-rose-500/40 hover:bg-rose-900/60 animate-pulse"
+                    }`}
+                    title={isOnline ? "Canlı sunucu bağlantısı aktif" : "Bağlantı koptu. Yeniden bağlanmak için tıklayın."}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`} />
+                    <span>{isOnline ? 'ONLINE CANLI' : 'BAĞLANTI YOK / ÇEVRİMDIŞI'}</span>
+                  </button>
                 </div>
 
                 {/* Word Length Selector for Duels */}
@@ -1011,11 +1019,19 @@ export default function WelcomeScreen({
           </h1>
         </div>
 
-        {/* Active connection status */}
-        <div className="flex items-center gap-1 bg-[#1F2633] border border-white/5 rounded-full px-2.5 py-0.5 text-[8.5px] font-extrabold text-emerald-400 shadow-sm shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span>AKTİF</span>
-        </div>
+        {/* Dynamic connection status badge */}
+        <button
+          onClick={onReconnect}
+          className={`flex items-center gap-1.5 border rounded-full px-2.5 py-0.5 text-[8.5px] font-extrabold shadow-sm shrink-0 transition-all cursor-pointer ${
+            isOnline
+              ? "bg-[#1F2633] border-emerald-500/30 text-emerald-400 hover:bg-emerald-950/40"
+              : "bg-rose-950/80 border-rose-500/50 text-rose-300 hover:bg-rose-900/80 animate-pulse"
+          }`}
+          title={isOnline ? "İnternet ve Sunucu Bağlantısı Aktif" : "İnternet veya Sunucu Bağlantısı Kesildi - Yeniden Bağlanmak İçin Tıklayın"}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
+          <span>{isOnline ? "AKTİF" : "BAĞLANTI YOK / ÇEVRİMDIŞI"}</span>
+        </button>
       </div>
 
       {/* Unified Level, Profile Photo, Name Card (Requirement 5) */}
