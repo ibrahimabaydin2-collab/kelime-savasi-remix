@@ -804,6 +804,136 @@ app.post('/api/support', async (req, res) => {
   }
 });
 
+// Save FCM Token Endpoint
+app.post('/api/save-fcm-token', async (req, res) => {
+  try {
+    const { userId, fcmToken } = req.body || {};
+    if (userId && fcmToken) {
+      await setDoc(doc(db, 'users', userId), { fcmToken, fcmTokenUpdatedAt: new Date().toISOString() }, { merge: true });
+      console.log(`[FCM API] Saved device token for user ${userId}`);
+    }
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('[FCM API] Error saving token:', error);
+    res.status(500).json({ error: error?.message });
+  }
+});
+
+// Trigger FCM High-Priority Match End Push Notification Endpoint
+app.post('/api/trigger-match-end-push', async (req, res) => {
+  try {
+    const { matchId, winnerId, loserId, winnerName, loserName, winReason, correctWord } = req.body || {};
+    if (!matchId) return res.status(400).json({ error: 'matchId is required' });
+
+    void sendFcmHighPriorityMatchEndNotification({
+      matchId,
+      winnerId: winnerId || '',
+      loserId,
+      winnerName,
+      loserName,
+      winReason,
+      correctWord
+    }).catch(() => {});
+
+    res.json({ success: true, message: 'FCM High Priority Push triggered successfully' });
+  } catch (error: any) {
+    console.error('[FCM API] Error triggering match end push:', error);
+    res.status(500).json({ error: error?.message });
+  }
+});
+
+// FCM High Priority Push Notification Helper for Match End Events
+async function sendFcmHighPriorityMatchEndNotification(opts: {
+  matchId: string;
+  winnerId: string;
+  loserId?: string;
+  winnerName?: string;
+  loserName?: string;
+  winReason?: string;
+  correctWord?: string;
+}) {
+  const { matchId, winnerId, loserId, winnerName, loserName, winReason = 'correct_word', correctWord = '' } = opts;
+  console.log(`[FCM High Priority Push] Dispatching match_end notification for match: ${matchId}`);
+
+  try {
+    const targetUserIds = [winnerId, loserId].filter(Boolean) as string[];
+    const fcmTokens: string[] = [];
+
+    for (const uId of targetUserIds) {
+      if (!uId || uId === 'draw') continue;
+      try {
+        const userSnap = await getDoc(doc(db, 'users', uId));
+        if (userSnap.exists()) {
+          const uData = userSnap.data();
+          if (uData?.fcmToken) {
+            fcmTokens.push(uData.fcmToken);
+          }
+        }
+      } catch (err) {
+        console.warn(`[FCM Push] Failed to fetch token for user ${uId}:`, err);
+      }
+    }
+
+    if (fcmTokens.length === 0) {
+      console.log(`[FCM Push] No registered FCM device tokens found for match ${matchId}.`);
+      return;
+    }
+
+    let fcmApiKey = process.env.FIREBASE_API_KEY || '';
+    if (!fcmApiKey) {
+      try {
+        const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+        if (fs.existsSync(configPath)) {
+          const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          fcmApiKey = parsed.apiKey || '';
+        }
+      } catch (e) {}
+    }
+
+    for (const token of fcmTokens) {
+      const payload = {
+        to: token,
+        priority: 'high',
+        content_available: true,
+        data: {
+          type: 'match_end',
+          matchId,
+          winner: winnerId,
+          winnerId,
+          loser: loserId || '',
+          winnerName: winnerName || '',
+          loserName: loserName || '',
+          winReason,
+          correctWord,
+          timestamp: String(Date.now()),
+          click_action: 'FLUTTER_NOTIFICATION_CLICK'
+        },
+        notification: {
+          title: 'Düello Bitti! ⚡',
+          body: winnerId ? 'Düello sonucu belirlendi!' : 'Canlı düello sona erdi.',
+          sound: 'default',
+          priority: 'high'
+        }
+      };
+
+      try {
+        await axios.post('https://fcm.googleapis.com/fcm/send', payload, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `key=${fcmApiKey}`
+          },
+          timeout: 4000
+        });
+        console.log(`[FCM Push] High Priority FCM message sent successfully to token ${token.substring(0, 15)}...`);
+      } catch (fcmErr: any) {
+        console.warn(`[FCM Push] FCM legacy dispatch result for token ${token.substring(0, 15)}...:`, fcmErr?.message || fcmErr);
+      }
+    }
+  } catch (globalFcmErr) {
+    console.error('[FCM Push] Unexpected error during FCM push trigger:', globalFcmErr);
+  }
+}
+
 // Dedicated helper for Wordle guess evaluation in Turkish
 function evaluateTurkishGuess(guessWord: string, targetWord: string): Array<'correct' | 'present' | 'absent'> {
   const guess = turkishUpper(guessWord).trim().split('');
@@ -936,6 +1066,17 @@ async function startServer() {
           [match.player2.id]: match.player2.attempts
         }
       });
+
+      // Trigger FCM High Priority Push Notification for background/sleeping devices
+      void sendFcmHighPriorityMatchEndNotification({
+        matchId: match.matchId,
+        winnerId: remainingPlayer.id,
+        loserId: leftPlayer.id,
+        winnerName: remainingPlayer.name,
+        loserName: leftPlayer.name,
+        winReason: 'opponent_left',
+        correctWord: match.correctWord
+      }).catch(() => {});
 
       socketToMatchIdMap.delete(remainingPlayer.ws);
       setTimeout(() => activeDuelMatches.delete(matchId), 15000);
@@ -1175,6 +1316,17 @@ async function startServer() {
             sendWs(match.player1.ws, endPayload);
             sendWs(match.player2.ws, endPayload);
 
+            // Trigger FCM High Priority Push Notification for background/sleeping devices
+            void sendFcmHighPriorityMatchEndNotification({
+              matchId: match.matchId,
+              winnerId: sender.id,
+              loserId: opponent.id,
+              winnerName: sender.name,
+              loserName: opponent.name,
+              winReason: 'correct_word',
+              correctWord: match.correctWord
+            }).catch(() => {});
+
             socketToMatchIdMap.delete(match.player1.ws);
             socketToMatchIdMap.delete(match.player2.ws);
             setTimeout(() => activeDuelMatches.delete(matchId), 15000);
@@ -1218,6 +1370,15 @@ async function startServer() {
 
               sendWs(match.player1.ws, endPayload);
               sendWs(match.player2.ws, endPayload);
+
+              // Trigger FCM High Priority Push Notification for background/sleeping devices
+              void sendFcmHighPriorityMatchEndNotification({
+                matchId: match.matchId,
+                winnerId: 'draw',
+                loserId: '',
+                winReason: 'max_attempts',
+                correctWord: match.correctWord
+              }).catch(() => {});
 
               socketToMatchIdMap.delete(match.player1.ws);
               socketToMatchIdMap.delete(match.player2.ws);

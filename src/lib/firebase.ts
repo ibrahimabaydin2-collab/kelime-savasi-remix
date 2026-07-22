@@ -35,7 +35,8 @@ import {
   getDocs,
   limit,
   getDocFromServer,
-  updateDoc
+  updateDoc,
+  setLogLevel
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { UserProfile } from '../types.js';
@@ -57,6 +58,13 @@ try {
   }
 } catch (e) {
   usePersistentCache = false;
+}
+
+// Silence harmless gRPC idle stream warnings in WebViews / APKs
+try {
+  setLogLevel('error');
+} catch (e) {
+  // ignore
 }
 
 // Initialize Firestore with auto-detect long polling and cache configuration

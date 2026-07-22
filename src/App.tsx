@@ -24,7 +24,7 @@ import BadgeUnlockedModal from './components/BadgeUnlockedModal.js';
 import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, db } from './lib/firebase.js';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types.js';
-import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home } from 'lucide-react';
+import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut } from 'lucide-react';
 import { getRandomWord, isWordInCuratedList, getDailyWordAndLength, COMMON_TURKISH_WORDS, CLEANED_TURKISH_WORDS } from './data/wordlist.js';
 import { turkishUpper, turkishLower, validateTurkishLinguistics } from './utils/turkish.js';
 import { getApiUrl, getWsUrl, validateWordClientSide } from './utils/api.js';
@@ -904,7 +904,7 @@ export default function App() {
     if (!deviceId) return;
     const checkDailyStatusOnStart = async () => {
       try {
-        const response = await fetch(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`);
+        const response = await fetch(getApiUrl(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`));
         if (response.ok) {
           const data = await response.json();
           const todayDateStr = getDailyWordAndLength().dateStr;
@@ -923,7 +923,7 @@ export default function App() {
           }
         }
       } catch (e) {
-        console.error('Error fetching initial daily puzzle status:', e);
+        console.warn('Daily puzzle initial status fetch skipped or failed:', e);
       }
     };
     checkDailyStatusOnStart();
@@ -1640,7 +1640,9 @@ export default function App() {
               const target = data.correctWord || activeMatch?.targetWord || activeMatch?.correctWord || targetWord || '';
               if (target) {
                 setTargetWord(target);
-                fetchTargetWordDefinition(target);
+                try {
+                  void fetchTargetWordDefinition(target).catch(() => {});
+                } catch (e) {}
               }
 
               const isWinner = Boolean(profile?.id && data.winner === profile.id);
@@ -1866,8 +1868,8 @@ export default function App() {
     }
   }, [wordLength, gameMode, hasEnteredGame, activeMatch]);
 
-  // Instant/synchronous duel completion handler based on Firestore real-time snapshot
-  const handleInstantMatchEnd = useCallback((winnerId: string) => {
+  // Instant/synchronous duel completion handler based on Firestore real-time snapshot or WebSocket
+  const handleInstantMatchEnd = useCallback((winnerId: string, matchData?: any) => {
     // Unconditionally allow immediate matchmaking re-entry
     setIsMatchmakingLocked(false);
 
@@ -1884,13 +1886,15 @@ export default function App() {
     setActiveMatch((prev) => {
       if (!prev) return prev;
       
-      const updatedPlayers = { ...(prev.players || {}) };
+      const finalWinnerId = winnerId || matchData?.winner || matchData?.winnerId || prev.winner || prev.winnerId;
+      const updatedPlayers = { ...(prev.players || {}), ...(matchData?.players || {}) };
+      
       // Synchronize the final states of players
       Object.keys(updatedPlayers).forEach((pId) => {
-        const isThisWinner = pId === winnerId;
+        const isThisWinner = pId === finalWinnerId;
         const playerCurrentAttempts = (pId === profile.id && attempts.length > 0)
           ? attempts
-          : (updatedPlayers[pId]?.attempts || []);
+          : (updatedPlayers[pId]?.attempts || matchData?.players?.[pId]?.attempts || []);
 
         updatedPlayers[pId] = {
           ...updatedPlayers[pId],
@@ -1900,20 +1904,28 @@ export default function App() {
         };
       });
 
+      const target = matchData?.targetWord || matchData?.correctWord || prev.targetWord || prev.correctWord;
+
       return {
         ...prev,
+        ...matchData,
         status: 'ended',
         gameState: 'FINISHED',
-        winner: winnerId,
-        winnerId: winnerId,
+        isGameOver: true,
+        winner: finalWinnerId,
+        winnerId: finalWinnerId,
+        targetWord: target || prev.targetWord,
+        correctWord: target || prev.correctWord,
         players: updatedPlayers
       };
     });
 
-    const wordToUse = targetWord || activeMatch?.targetWord || activeMatch?.correctWord || '';
+    const wordToUse = matchData?.targetWord || matchData?.correctWord || targetWord || activeMatch?.targetWord || activeMatch?.correctWord || '';
     if (wordToUse) {
       setTargetWord(wordToUse);
-      fetchTargetWordDefinition(wordToUse);
+      try {
+        void fetchTargetWordDefinition(wordToUse).catch(() => {});
+      } catch (e) {}
     }
 
     if (winnerId === profile.id) {
@@ -1924,6 +1936,31 @@ export default function App() {
     } else {
       showToast('Maçı rakibin kazandı. Daha hızlı olmalısın!', 'error');
       playDefeatSound(settings.soundEnabled);
+    }
+
+    // Trigger FCM High Priority Push Notification for background/sleeping devices via backend
+    const currentMatchId = activeMatch?.id || activeMatch?.matchId || matchData?.id || matchData?.matchId;
+    if (currentMatchId) {
+      const playersMap = activeMatch?.players || matchData?.players || {};
+      const oppEntry = Object.values(playersMap).find((p: any) => p && p.id !== profile.id) as any;
+      const oppId = oppEntry?.id || '';
+      const oppName = oppEntry?.name || 'Rakip';
+
+      fetch(getApiUrl('/api/trigger-match-end-push'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matchId: currentMatchId,
+          winnerId,
+          loserId: winnerId === profile.id ? oppId : profile.id,
+          winnerName: winnerId === profile.id ? profile.name : oppName,
+          loserName: winnerId === profile.id ? oppName : profile.name,
+          winReason: matchData?.winReason || 'correct_word',
+          correctWord: wordToUse
+        })
+      }).catch((e) => {
+        console.warn('Non-critical FCM trigger note:', e);
+      });
     }
 
     // Clean up matchmaking state in Firestore in the background
@@ -1938,54 +1975,176 @@ export default function App() {
       matchUnsubscribeRef.current();
       matchUnsubscribeRef.current = null;
     }
-  }, [profile.id, targetWord, settings.soundEnabled]);
+  }, [profile.id, profile.name, targetWord, settings.soundEnabled, attempts, activeMatch?.id, activeMatch?.matchId, activeMatch?.targetWord, activeMatch?.correctWord, activeMatch?.players]);
 
   const handleInstantMatchEndRef = useRef(handleInstantMatchEnd);
   useEffect(() => {
     handleInstantMatchEndRef.current = handleInstantMatchEnd;
   }, [handleInstantMatchEnd]);
 
-  // Real-time Firestore subscription to match state for instantaneous duel ending
+  // Firebase Cloud Messaging (FCM) & Push Notification Listener / Registration
   useEffect(() => {
-    if (activeMatch && activeMatch.id) {
-      if (matchUnsubscribeRef.current) {
-        matchUnsubscribeRef.current();
-        matchUnsubscribeRef.current = null;
+    if (!profile.id) return;
+
+    const saveTokenToServer = async (token: string) => {
+      if (!token) return;
+      try {
+        await saveUserProfileToFirestore({ ...profile, fcmToken: token });
+        await fetch(getApiUrl('/api/save-fcm-token'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: profile.id, fcmToken: token })
+        }).catch(() => {});
+      } catch (e) {
+        console.warn('FCM Token sync error:', e);
       }
+    };
 
-      const matchRef = doc(db, 'matches', activeMatch.id);
-
-      console.log(`Subscribing to real-time Firestore listener for match document: matches/${activeMatch.id}`);
-      matchUnsubscribeRef.current = onSnapshot(matchRef, (snapshot) => {
-        if (snapshot.exists()) {
-          const matchData = snapshot.data();
-          const isFinished = matchData.isGameOver === true || 
-                             matchData.status === 'finished' || 
-                             matchData.status === 'ended' ||
-                             matchData.gameState === 'finished' ||
-                             matchData.gameState === 'FINISHED';
-          const winnerId = matchData.winner || matchData.winnerId || matchData.finishedBy;
-
-          if (isFinished) {
-            console.log(`Instant match end condition met from Firestore. Winner is: ${winnerId}`);
-            handleInstantMatchEndRef.current(winnerId || 'draw');
-          }
+    // 1. Android Native Bridge FCM Token Sync
+    if (typeof window !== 'undefined' && (window as any).AndroidBridge?.getFcmToken) {
+      try {
+        const nativeToken = (window as any).AndroidBridge.getFcmToken();
+        if (nativeToken) {
+          saveTokenToServer(nativeToken);
         }
-      }, (error) => {
-        console.error(`Firestore snapshot subscription failed for matches/${activeMatch.id}:`, error);
-      });
+      } catch (e) {}
     }
+
+    // 2. Global listener for Native Push Notifications or FCM Message Events passed via Android Bridge or Window Event
+    const handlePushMessage = (event: any) => {
+      const payload = event.detail || event.data || event;
+      if (payload && (payload.type === 'match_end' || payload.dataType === 'match_end' || payload.action === 'match_end')) {
+        const winnerId = payload.winner || payload.winnerId;
+        console.log('[FCM High Priority Listener] Match end push received:', payload);
+        if (winnerId) {
+          handleInstantMatchEndRef.current(winnerId, payload);
+        }
+      }
+    };
+
+    window.addEventListener('fcm_message', handlePushMessage as any);
+    window.addEventListener('push_notification', handlePushMessage as any);
+    if (typeof window !== 'undefined') {
+      (window as any).onFcmMessageReceived = (dataJson: string | object) => {
+        try {
+          const parsed = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
+          handlePushMessage(parsed);
+        } catch (e) {}
+      };
+    }
+
+    return () => {
+      window.removeEventListener('fcm_message', handlePushMessage as any);
+      window.removeEventListener('push_notification', handlePushMessage as any);
+    };
+  }, [profile.id]);
+
+  // Helper function to inspect match document and trigger immediate match end on victory/defeat
+  const checkAndTriggerMatchEnd = useCallback((matchData: any) => {
+    if (!matchData) return false;
+    const winningPlayerEntry = Object.entries(matchData.players || {}).find(([_, p]: [string, any]) => p?.won === true);
+    const isFinished = matchData.isGameOver === true || 
+                       matchData.status === 'finished' || 
+                       matchData.status === 'ended' ||
+                       matchData.gameState === 'finished' ||
+                       matchData.gameState === 'FINISHED' ||
+                       Boolean(winningPlayerEntry);
+
+    const winnerId = matchData.winner || 
+                     matchData.winnerId || 
+                     matchData.finishedBy || 
+                     (winningPlayerEntry ? winningPlayerEntry[0] : null);
+
+    if (isFinished && winnerId) {
+      console.log(`[Real-time Match Sync] Match end detected! Winner: ${winnerId}`);
+      handleInstantMatchEndRef.current(winnerId, matchData);
+      return true;
+    }
+    return false;
+  }, []);
+
+  // Real-time Firestore subscription + fast polling backup (800ms) for instantaneous duel ending on real Android APKs
+  useEffect(() => {
+    const matchId = activeMatch?.matchId || activeMatch?.id;
+    if (!matchId) return;
+
+    if (matchUnsubscribeRef.current) {
+      matchUnsubscribeRef.current();
+      matchUnsubscribeRef.current = null;
+    }
+
+    const matchRef = doc(db, 'matches', matchId);
+    const roomRef = doc(db, 'rooms', matchId);
+
+    console.log(`Subscribing to real-time Firestore listeners for match document: ${matchId}`);
+    
+    const unsubMatch = onSnapshot(matchRef, (snapshot) => {
+      if (snapshot.exists()) {
+        checkAndTriggerMatchEnd(snapshot.data());
+      }
+    }, (error) => {
+      console.warn(`Firestore snapshot subscription notice for matches/${matchId}:`, error);
+    });
+
+    const unsubRoom = onSnapshot(roomRef, (snapshot) => {
+      if (snapshot.exists()) {
+        checkAndTriggerMatchEnd(snapshot.data());
+      }
+    }, () => {});
+
+    matchUnsubscribeRef.current = () => {
+      unsubMatch();
+      unsubRoom();
+    };
+
+    // Fast polling fallback (every 800ms) for mobile WebViews / APKs where WebChannel streams can silently pause or disconnect
+    const pollInterval = setInterval(async () => {
+      try {
+        const matchSnap = await getDoc(matchRef);
+        if (matchSnap.exists()) {
+          const ended = checkAndTriggerMatchEnd(matchSnap.data());
+          if (ended) return;
+        }
+        const roomSnap = await getDoc(roomRef);
+        if (roomSnap.exists()) {
+          checkAndTriggerMatchEnd(roomSnap.data());
+        }
+      } catch (e) {
+        // Silently ignore polling network blips
+      }
+    }, 800);
 
     return () => {
       if (matchUnsubscribeRef.current) {
         matchUnsubscribeRef.current();
         matchUnsubscribeRef.current = null;
       }
+      clearInterval(pollInterval);
     };
-  }, [activeMatch?.id]);
+  }, [activeMatch?.id, activeMatch?.matchId, checkAndTriggerMatchEnd]);
 
   const handleLeaveMatchToMenu = useCallback(async () => {
     console.log('Centralized cleanup: returning to main menu');
+    if (activeMatch) {
+      const matchId = activeMatch.matchId || activeMatch.id;
+      const opponentPlayer = Object.values(activeMatch.players || {}).find((p: any) => p?.id !== profile.id) as any;
+      if (matchId) {
+        const leavePayload = {
+          isGameOver: true,
+          status: 'finished',
+          gameState: 'finished',
+          winReason: 'opponent_left',
+          winner: opponentPlayer?.id || 'opponent',
+          winnerId: opponentPlayer?.id || 'opponent',
+          finishedBy: opponentPlayer?.id || 'opponent',
+          loser: profile.id,
+          updatedAt: new Date().toISOString()
+        };
+        setDoc(doc(db, 'matches', matchId), leavePayload, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'rooms', matchId), leavePayload, { merge: true }).catch(() => {});
+      }
+    }
+
     if (matchUnsubscribeRef.current) {
       matchUnsubscribeRef.current();
       matchUnsubscribeRef.current = null;
@@ -2109,78 +2268,82 @@ export default function App() {
     };
   }, [isAppActive, gameStatus, attempts.length, isValidating, hasEnteredGame, gameMode, activeMatch, isDailyPuzzle, targetWord, currentWordIndex, targetWords, cumulativeScore]); // Resets interval on attempt submission or validation change or exit or gameMode change
 
-  // Fetch direct definition for the target word with multi-layered client-side fallbacks
+  // Fetch direct definition for the target word with multi-layered client-side fallbacks (non-blocking & fail-safe)
   const fetchTargetWordDefinition = async (wordToFetch: string) => {
     if (!wordToFetch) return;
-    setWordDefinition('loading');
     
-    // Step 1: Try fetching from our robust full-stack backend with a strict timeout
-    let definitionFound = false;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-
     try {
-      console.log(`[Client Definition] Attempting to fetch from backend for: "${wordToFetch}"`);
-      const response = await fetch(getApiUrl('/api/get-definition'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ word: wordToFetch }),
-        signal: controller.signal
-      });
+      setWordDefinition('loading');
       
-      clearTimeout(timeoutId);
+      // Step 1: Try fetching from backend with a strict 2s timeout for fast UI transition
+      let definitionFound = false;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.definition) {
-          const isGeneric = data.definition === 'Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.' ||
-                            data.definition.includes('tanımına şu an ulaşılamıyor') ||
-                            data.definition.includes('Yerel kelime listesinde kayıtlı geçerli');
-          
-          if (!isGeneric) {
-            setWordDefinition(data.definition);
-            definitionFound = true;
-            return;
-          } else {
-            console.warn('[Client Definition] Backend returned a generic fallback definition, executing client-side fallbacks.');
+      try {
+        console.log(`[Client Definition] Attempting to fetch from backend for: "${wordToFetch}"`);
+        const response = await fetch(getApiUrl('/api/get-definition'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ word: wordToFetch }),
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.definition) {
+            const isGeneric = data.definition === 'Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.' ||
+                              data.definition.includes('tanımına şu an ulaşılamıyor') ||
+                              data.definition.includes('Yerel kelime listesinde kayıtlı geçerli');
+            
+            if (!isGeneric) {
+              setWordDefinition(data.definition);
+              definitionFound = true;
+              return;
+            }
           }
         }
+      } catch (e: any) {
+        clearTimeout(timeoutId);
+        console.warn('[Client Definition] Backend fetch skipped/failed/timed out:', e?.message || e);
       }
-    } catch (e: any) {
-      clearTimeout(timeoutId);
-      console.warn('[Client Definition] Backend fetch failed or timed out:', e?.message || e);
-    }
 
-    if (definitionFound) return;
+      if (definitionFound) return;
 
-    // Step 2: Fallback - Fetch directly from Wiktionary/validation source using the client-side parsing utility
-    try {
-      console.log(`[Client Definition Fallback] Attempting direct Wiktionary/validation query for: "${wordToFetch}"`);
-      const wikiRes = await validateWordClientSide(wordToFetch, wordToFetch.length);
-      if (wikiRes && wikiRes.valid && wikiRes.definition) {
-        const isGeneric = wikiRes.definition.includes('bulunamadı') || 
-                          wikiRes.definition.includes('Hata') ||
-                          wikiRes.definition.includes('yerel sözlükte bulundu') ||
-                          wikiRes.definition.includes('Wikisözlük\'te doğrulandı');
-                          
-        if (!isGeneric && wikiRes.definition.length > 5) {
-          console.log(`[Client Definition Fallback Success] Direct Wiktionary found meaning:`, wikiRes.definition);
-          setWordDefinition(wikiRes.definition);
-          return;
+      // Step 2: Fallback - Direct Wiktionary/validation query
+      try {
+        const wikiRes = await validateWordClientSide(wordToFetch, wordToFetch.length);
+        if (wikiRes && wikiRes.valid && wikiRes.definition) {
+          const isGeneric = wikiRes.definition.includes('bulunamadı') || 
+                            wikiRes.definition.includes('Hata') ||
+                            wikiRes.definition.includes('yerel sözlükte bulundu') ||
+                            wikiRes.definition.includes('Wikisözlük\'te doğrulandı');
+                            
+          if (!isGeneric && wikiRes.definition.length > 5) {
+            setWordDefinition(wikiRes.definition);
+            return;
+          }
         }
+      } catch (wikiErr: any) {
+        console.warn('[Client Definition Fallback] Direct Wiktionary utility query failed:', wikiErr?.message || wikiErr);
       }
-    } catch (wikiErr: any) {
-      console.warn('[Client Definition Fallback] Direct Wiktionary utility query failed:', wikiErr?.message || wikiErr);
-    }
 
-    // Default ultimate fallback if all layers failed
-    setWordDefinition('Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.');
+      // Default ultimate fallback if all layers failed
+      setWordDefinition('Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.');
+    } catch (globalErr) {
+      console.warn('[Client Definition] Non-critical definition lookup error:', globalErr);
+      setWordDefinition('Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.');
+    }
   };
 
   // Prefetch target word definition in the background when the target word is determined (active game)
   useEffect(() => {
     if (targetWord) {
-      fetchTargetWordDefinition(targetWord);
+      try {
+        void fetchTargetWordDefinition(targetWord).catch(() => {});
+      } catch (e) {}
     } else {
       setWordDefinition('');
     }
@@ -2481,11 +2644,14 @@ export default function App() {
         const matchId = activeMatch.matchId || activeMatch.id;
         if (matchId) {
           const matchRef = doc(db, 'matches', matchId);
-          updateDoc(matchRef, {
+          const roomRef = doc(db, 'rooms', matchId);
+          const playerUpdate = {
             [`players.${profile.id}.attempts`]: updatedAttempts,
             [`players.${profile.id}.completed`]: (hasWon || updatedAttempts.length >= 6),
             [`players.${profile.id}.won`]: hasWon
-          }).catch(err => console.warn('Non-blocking Firestore update error:', err));
+          };
+          updateDoc(matchRef, playerUpdate).catch(err => console.warn('Non-blocking Firestore update error:', err));
+          updateDoc(roomRef, playerUpdate).catch(() => {});
         }
 
         if (hasWon) {
@@ -2498,8 +2664,22 @@ export default function App() {
           }
           setGameStatus('idle'); // Wait for server state sync (match_round_start or match_end)
 
-          // Update Firestore atomic transaction. This guarantees only the absolute first to finish wins and triggers both instantly.
-          const matchRef = doc(db, 'matches', activeMatch.id);
+          // Update Firestore atomic transaction across matches & rooms.
+          const matchRef = doc(db, 'matches', matchId);
+          const roomRef = doc(db, 'rooms', matchId);
+          const finishPayload = {
+            isGameOver: true, 
+            winner: profile.id, 
+            winnerId: profile.id, 
+            finishedBy: profile.id, 
+            status: 'finished', 
+            gameState: 'finished',
+            updatedAt: new Date().toISOString()
+          };
+
+          // Always sync room doc asynchronously
+          setDoc(roomRef, finishPayload, { merge: true }).catch(() => {});
+
           runTransaction(db, async (transaction) => {
             const matchDoc = await transaction.get(matchRef);
             if (matchDoc.exists()) {
@@ -2516,14 +2696,7 @@ export default function App() {
               }
             }
             // We are the first! Mark game as over, save our ID as the winner, set status as finished
-            transaction.set(matchRef, { 
-              isGameOver: true, 
-              winner: profile.id, 
-              winnerId: profile.id, 
-              finishedBy: profile.id, 
-              status: 'finished', 
-              gameState: 'finished' 
-            }, { merge: true });
+            transaction.set(matchRef, finishPayload, { merge: true });
             return { success: true, winner: profile.id };
           }).then((result) => {
             if (result && !result.success) {
@@ -2537,14 +2710,7 @@ export default function App() {
           }).catch((err) => {
             console.error('Failed to update Firestore match winner via transaction, falling back:', err);
             // Fallback to standard setDoc
-            setDoc(matchRef, { 
-              isGameOver: true, 
-              winner: profile.id, 
-              winnerId: profile.id, 
-              finishedBy: profile.id, 
-              status: 'finished', 
-              gameState: 'finished' 
-            }, { merge: true }).then(() => {
+            setDoc(matchRef, finishPayload, { merge: true }).then(() => {
               handleInstantMatchEnd(profile.id);
             });
           });
@@ -3321,7 +3487,7 @@ export default function App() {
 
   const syncDailyPuzzleProgress = async (updatedAttempts: GameAttempt[], solved: boolean, failed: boolean) => {
     try {
-      await fetch('/api/daily-puzzle', {
+      await fetch(getApiUrl('/api/daily-puzzle'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3346,7 +3512,7 @@ export default function App() {
 
     setIsValidating(true);
     try {
-      const response = await fetch(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`);
+      const response = await fetch(getApiUrl(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`));
       if (!response.ok) {
         throw new Error('Could not fetch daily puzzle status');
       }
@@ -3474,7 +3640,7 @@ export default function App() {
     }
   };
 
-  const opponent = activeMatch ? Object.values(activeMatch.players).find(p => (p as any).name !== profile.name) as any : null;
+  const opponent = activeMatch ? Object.values(activeMatch.players || {}).find(p => (p as any)?.id !== profile.id) as any : null;
   const isMatchEnded = !!(
     activeMatch && (
       activeMatch.status === 'ended' ||
@@ -3502,10 +3668,12 @@ export default function App() {
       // Force set isMatchEndedRef.current to true so keyboard listener ignores any events
       isMatchEndedRef.current = true;
 
-      // Ensure word definition is fetched for match end card
+      // Ensure word definition is fetched for match end card (non-blocking)
       const wordToUse = targetWord || activeMatch.targetWord || activeMatch.correctWord || '';
       if (wordToUse) {
-        fetchTargetWordDefinition(wordToUse);
+        try {
+          void fetchTargetWordDefinition(wordToUse).catch(() => {});
+        } catch (e) {}
       }
 
       if (typeof window !== 'undefined' && (window as any).AndroidBridge) {
@@ -3749,58 +3917,163 @@ export default function App() {
               </div>
             )}
 
-            {/* Real-time Match Split View Banner */}
+            {/* Canlı Düello Kompakt Skor Tahtası (Live Duel Scoreboard) */}
         {activeMatch && (
-          <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 rounded-2xl p-2.5 mb-2.5 flex flex-col sm:flex-row justify-between items-center gap-3 shadow-sm">
-            <div className="flex items-center gap-2.5">
-              <Swords size={20} className="text-emerald-500 shrink-0" />
-              <div className="text-left">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <h4 className="font-bold text-xs text-gray-800 dark:text-white">Kelime Savaşı Sürüyor!</h4>
-                  {activeMatch.matchWordsCount && (
-                    <span className="text-[9px] font-black font-mono bg-emerald-500 text-white px-1.5 py-0.5 rounded-full uppercase tracking-wider">
-                      Canlı Düello ⚡
+          (() => {
+            const oppPlayer = Object.values(activeMatch.players || {}).find((p: any) => p?.id !== profile.id) as any;
+            const oppId = oppPlayer?.id || Object.keys(activeMatch.players || {}).find(id => id !== profile.id) || '';
+            const selfState = activeMatch.players?.[profile.id] || {};
+            const oppState = activeMatch.players?.[oppId] || {};
+
+            const selfAttemptCount = attempts.length;
+            const oppAttempts = activeMatch.attempts?.[oppId] || oppState.attempts || [];
+            const oppAttemptCount = Array.isArray(oppAttempts) ? oppAttempts.length : 0;
+
+            const selfScore = selfState.score ?? activeMatch.scores?.[profile.id] ?? activeMatch.roundsWon?.[profile.id] ?? 0;
+            const oppScore = oppState.score ?? activeMatch.scores?.[oppId] ?? activeMatch.roundsWon?.[oppId] ?? 0;
+
+            const selfCompleted = selfState.completed || gameStatus === 'won' || gameStatus === 'lost';
+            const oppCompleted = oppState.completed;
+
+            return (
+              <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto bg-slate-900/95 backdrop-blur-md border border-amber-500/30 rounded-2xl p-2.5 sm:p-3 mb-2.5 shadow-2xl text-white relative overflow-hidden" id="canli-duello-skor-tahtasi">
+                {/* Animated Accent Line */}
+                <div className="absolute top-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500" />
+
+                {/* Top Header Row */}
+                <div className="flex justify-between items-center mb-2 px-0.5 pb-1.5 border-b border-white/10">
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                     </span>
-                  )}
-                </div>
-                {activeMatch.roundsWon && (
-                  <div className="flex gap-2.5 mt-0.5 text-[10px] font-bold font-mono">
-                    <span className="text-emerald-600 dark:text-emerald-400">SEN: {activeMatch.roundsWon[profile.id] || 0}</span>
-                    <span className="text-gray-400">|</span>
-                    <span className="text-amber-500">RAKİP: {activeMatch.roundsWon[opponent?.id || ''] || 0}</span>
+                    <span className="text-[10px] sm:text-xs font-black font-mono uppercase tracking-wider text-amber-400 flex items-center gap-1">
+                      <Swords size={14} className="text-amber-400 shrink-0 animate-pulse" />
+                      CANLI DÜELLO SKOR TAHTASI
+                    </span>
+                    <span className="text-[9px] font-bold font-mono bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30">
+                      {targetWord?.length || duelWordLength || 5} HARFLİ
+                    </span>
                   </div>
-                )}
-              </div>
-            </div>
 
-            {/* Scoreboard Split */}
-            <div className="flex gap-2 items-center">
-              <div className="flex items-center gap-1.5 bg-white dark:bg-gray-900 px-2 py-1 rounded-lg shadow-xs border border-gray-100 dark:border-gray-800">
-                <div className="text-left">
-                  <span className="text-[9px] text-gray-400 font-bold block leading-none">SEN</span>
-                  <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">{attempts.length} Dn</span>
+                  <button
+                    onClick={handleLeaveMatch}
+                    className="flex items-center gap-1 text-[10px] font-extrabold bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 px-2.5 py-1 rounded-lg transition active:scale-95 cursor-pointer"
+                    title="Düellodan Çık"
+                  >
+                    <LogOut size={12} />
+                    <span>Çık</span>
+                  </button>
+                </div>
+
+                {/* Scoreboard Players Grid */}
+                <div className="grid grid-cols-11 items-center gap-1 sm:gap-2">
+                  {/* Player 1: SEN */}
+                  <div className="col-span-5 bg-black/40 border border-emerald-500/30 rounded-xl p-2 flex flex-col justify-between">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden">
+                          {profile.avatarUrl ? (
+                            <img src={profile.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            profile.name?.[0]?.toUpperCase() || 'S'
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-[9px] text-emerald-400 font-bold block leading-none font-mono">SEN</span>
+                          <span className="text-xs font-black text-white truncate block leading-tight">{profile.name || 'Sen'}</span>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
+                        <span className="text-xs font-black text-emerald-400 font-mono">{selfScore} P</span>
+                      </div>
+                    </div>
+
+                    {/* Attempt Tracker Dots & Label */}
+                    <div className="mt-1 pt-1 border-t border-white/5 flex items-center justify-between">
+                      <div className="flex gap-1 items-center">
+                        {Array.from({ length: 6 }).map((_, idx) => {
+                          const isFilled = idx < selfAttemptCount;
+                          const isCurrent = idx === selfAttemptCount && !selfCompleted;
+                          return (
+                            <span
+                              key={idx}
+                              className={`w-2 h-2 rounded-full transition-all ${
+                                isFilled
+                                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                                  : isCurrent
+                                  ? 'bg-amber-400 animate-pulse ring-2 ring-amber-400/40'
+                                  : 'bg-gray-700/60'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+                      <span className="text-[10px] font-bold font-mono text-emerald-300">
+                        {selfCompleted ? (selfState.won ? 'Bildi ✓' : 'Bitti') : `Deneme ${selfAttemptCount}/6`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Center VS Divider */}
+                  <div className="col-span-1 flex flex-col items-center justify-center">
+                    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gradient-to-tr from-amber-500 to-yellow-400 text-slate-950 font-black text-xs font-mono flex items-center justify-center shadow-lg border border-amber-300 animate-pulse">
+                      VS
+                    </div>
+                  </div>
+
+                  {/* Player 2: RAKİP */}
+                  <div className="col-span-5 bg-black/40 border border-amber-500/30 rounded-xl p-2 flex flex-col justify-between">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-black text-xs text-amber-300 shrink-0 overflow-hidden">
+                          {oppPlayer?.avatarUrl ? (
+                            <img src={oppPlayer.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            oppPlayer?.name?.[0]?.toUpperCase() || 'R'
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-[9px] text-amber-400 font-bold block leading-none font-mono">RAKİP</span>
+                          <span className="text-xs font-black text-white truncate block leading-tight">{oppPlayer?.name || 'Rakip'}</span>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
+                        <span className="text-xs font-black text-amber-400 font-mono">{oppScore} P</span>
+                      </div>
+                    </div>
+
+                    {/* Attempt Tracker Dots & Label */}
+                    <div className="mt-1 pt-1 border-t border-white/5 flex items-center justify-between">
+                      <div className="flex gap-1 items-center">
+                        {Array.from({ length: 6 }).map((_, idx) => {
+                          const isFilled = idx < oppAttemptCount;
+                          const isCurrent = idx === oppAttemptCount && !oppCompleted;
+                          return (
+                            <span
+                              key={idx}
+                              className={`w-2 h-2 rounded-full transition-all ${
+                                isFilled
+                                  ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.8)]'
+                                  : isCurrent
+                                  ? 'bg-amber-400/80 animate-ping ring-2 ring-amber-400/30'
+                                  : 'bg-gray-700/60'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+                      <span className="text-[10px] font-bold font-mono text-amber-300">
+                        {oppCompleted ? (oppState.won ? 'Bildi ✓' : 'Bitti') : `Deneme ${oppAttemptCount}/6`}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              <div className="text-xs font-bold text-gray-300 font-mono">VS</div>
-
-              <div className="flex items-center gap-1.5 bg-white dark:bg-gray-900 px-2 py-1 rounded-lg shadow-xs border border-gray-100 dark:border-gray-800">
-                <div className="text-left">
-                  <span className="text-[9px] text-gray-400 font-bold block truncate max-w-[50px] leading-none">{opponent?.name?.toUpperCase() || 'RAKİP'}</span>
-                  <span className="text-[11px] font-bold text-amber-500">
-                    {opponent?.attempts?.length || 0} Dn
-                  </span>
-                </div>
-              </div>
-
-              <button
-                onClick={handleLeaveMatch}
-                className="text-[10px] bg-rose-500 hover:bg-rose-600 text-white font-extrabold px-2 py-1 rounded-lg cursor-pointer"
-              >
-                Çık
-              </button>
-            </div>
-          </div>
+            );
+          })()
         )}
 
         {/* Game Layout Wrapper */}
