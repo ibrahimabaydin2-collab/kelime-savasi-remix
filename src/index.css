@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/* WebView & Native Interface Layout Rules */
+.android-hybrid #top-ad-placeholder,
+.android-hybrid #bottom-ad-placeholder {
+  display: none !important;
+}
+
+/* Ensure smooth font rendering and zero extra margin for webview alignment */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+}
