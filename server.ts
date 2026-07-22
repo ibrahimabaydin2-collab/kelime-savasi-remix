@@ -1036,8 +1036,10 @@ async function startServer() {
 
       console.log(`[Duel Server] Match ${matchId}: Player ${leftPlayer.name} disconnected. Player ${remainingPlayer.name} wins by forfeit!`);
 
-      setDoc(doc(db, 'matches', match.matchId), {
+      const finishData = {
+        gameOver: true,
         isGameOver: true,
+        won: true,
         status: 'finished',
         gameState: 'finished',
         winner: remainingPlayer.id,
@@ -1046,8 +1048,12 @@ async function startServer() {
         loser: leftPlayer.id,
         winReason: 'opponent_left',
         updatedAt: new Date().toISOString()
-      }, { merge: true }).catch(err => {
+      };
+      setDoc(doc(db, 'matches', match.matchId), finishData, { merge: true }).catch(err => {
         console.error('[Duel Server] Error updating Firestore match doc on disconnect:', err);
+      });
+      setDoc(doc(db, 'rooms', match.matchId), finishData, { merge: true }).catch(err => {
+        console.error('[Duel Server] Error updating Firestore room doc on disconnect:', err);
       });
 
       // Notify remaining player
@@ -1274,8 +1280,10 @@ async function startServer() {
 
             console.log(`[Duel Server] Match ${matchId} WON by ${sender.name}! Word was ${match.correctWord}`);
 
-            setDoc(doc(db, 'matches', match.matchId), {
+            const winFinishData = {
+              gameOver: true,
               isGameOver: true,
+              won: true,
               status: 'finished',
               gameState: 'finished',
               winner: sender.id,
@@ -1284,8 +1292,12 @@ async function startServer() {
               loser: opponent.id,
               winReason: 'correct_word',
               updatedAt: new Date().toISOString()
-            }, { merge: true }).catch(err => {
+            };
+            setDoc(doc(db, 'matches', match.matchId), winFinishData, { merge: true }).catch(err => {
               console.error('[Duel Server] Error updating Firestore match doc on win:', err);
+            });
+            setDoc(doc(db, 'rooms', match.matchId), winFinishData, { merge: true }).catch(err => {
+              console.error('[Duel Server] Error updating Firestore room doc on win:', err);
             });
 
             // Send guess result to winning player

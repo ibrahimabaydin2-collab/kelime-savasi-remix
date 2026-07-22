@@ -202,65 +202,86 @@ const safeLocalStorage = {
 
 const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?: string; username?: string; displayName?: string; avatarUrl?: string }) => {
   const selfId = profile.id;
-  const selfName = profile.name || profile.username || profile.displayName || 'Sen';
+  const selfName = profile.name || profile.username || profile.displayName || 'Oyuncu';
+  const selfUsername = profile.username || selfName;
   const selfAvatar = profile.avatarUrl || '';
 
   const p1 = rawP1 || {};
   const p2 = rawP2 || {};
 
-  const p1IsSelf = (p1.id && p1.id === selfId) || (p1.name && p1.name === selfName && p1.name !== 'Oyuncu 1' && p1.name !== 'Oyuncu 2');
-  const p2IsSelf = (p2.id && p2.id === selfId) || (p2.name && p2.name === selfName && p2.name !== 'Oyuncu 1' && p2.name !== 'Oyuncu 2');
+  const p1Id = p1.id || p1.uid || p1.playerId;
+  const p2Id = p2.id || p2.uid || p2.playerId;
 
-  let finalP1: { id: string; name: string; avatarUrl: string };
-  let finalP2: { id: string; name: string; avatarUrl: string };
+  const p1IsSelf = p1Id === selfId || (p1.name && p1.name === selfName && p1.name !== 'Oyuncu 1' && p1.name !== 'Oyuncu 2');
+  const p2IsSelf = p2Id === selfId || (p2.name && p2.name === selfName && p2.name !== 'Oyuncu 1' && p2.name !== 'Oyuncu 2');
+
+  let finalP1: any;
+  let finalP2: any;
 
   if (p1IsSelf) {
     finalP1 = {
+      uid: selfId,
       id: selfId,
       name: selfName,
+      username: selfUsername,
+      displayName: selfName,
       avatarUrl: selfAvatar || p1.avatarUrl || ''
     };
-    const oppId = (p2.id && p2.id !== selfId && p2.id !== 'p1' && p2.id !== 'p2') ? p2.id : 'opponent';
-    const rawOppName = p2.name || p2.username || p2.displayName;
-    const oppName = (rawOppName && rawOppName !== selfName && rawOppName !== 'Oyuncu 1' && rawOppName !== 'Oyuncu 2')
-      ? rawOppName
+    const oppId = (p2Id && p2Id !== selfId && p2Id !== 'p1' && p2Id !== 'p2') ? p2Id : 'opponent';
+    const oppRawName = p2.username || p2.name || p2.displayName;
+    const oppName = (oppRawName && oppRawName !== selfName && oppRawName !== 'Oyuncu 1' && oppRawName !== 'Oyuncu 2')
+      ? oppRawName
       : 'Rakip';
     finalP2 = {
+      uid: oppId,
       id: oppId,
       name: oppName,
+      username: oppName,
+      displayName: oppName,
       avatarUrl: p2.avatarUrl || ''
     };
   } else if (p2IsSelf) {
     finalP2 = {
+      uid: selfId,
       id: selfId,
       name: selfName,
+      username: selfUsername,
+      displayName: selfName,
       avatarUrl: selfAvatar || p2.avatarUrl || ''
     };
-    const oppId = (p1.id && p1.id !== selfId && p1.id !== 'p1' && p1.id !== 'p2') ? p1.id : 'opponent';
-    const rawOppName = p1.name || p1.username || p1.displayName;
-    const oppName = (rawOppName && rawOppName !== selfName && rawOppName !== 'Oyuncu 1' && rawOppName !== 'Oyuncu 2')
-      ? rawOppName
+    const oppId = (p1Id && p1Id !== selfId && p1Id !== 'p1' && p1Id !== 'p2') ? p1Id : 'opponent';
+    const oppRawName = p1.username || p1.name || p1.displayName;
+    const oppName = (oppRawName && oppRawName !== selfName && oppRawName !== 'Oyuncu 1' && oppRawName !== 'Oyuncu 2')
+      ? oppRawName
       : 'Rakip';
     finalP1 = {
+      uid: oppId,
       id: oppId,
       name: oppName,
+      username: oppName,
+      displayName: oppName,
       avatarUrl: p1.avatarUrl || ''
     };
   } else {
-    // Default fallback: p1 as Self and p2 as Opponent
-    const rawP2Name = p2.name || p2.username || p2.displayName;
-    const oppName = (rawP2Name && rawP2Name !== selfName && rawP2Name !== 'Oyuncu 1' && rawP2Name !== 'Oyuncu 2')
-      ? rawP2Name
-      : 'Rakip';
+    const p1RawName = p1.username || p1.name || p1.displayName;
+    const p1Name = (p1RawName && p1RawName !== selfName) ? p1RawName : 'Oyuncu 1';
+    const p2RawName = p2.username || p2.name || p2.displayName;
+    const p2Name = (p2RawName && p2RawName !== selfName) ? p2RawName : 'Oyuncu 2';
 
     finalP1 = {
-      id: selfId,
-      name: selfName,
-      avatarUrl: selfAvatar || p1.avatarUrl || ''
+      uid: p1Id || 'p1',
+      id: p1Id || 'p1',
+      name: p1Name,
+      username: p1Name,
+      displayName: p1Name,
+      avatarUrl: p1.avatarUrl || ''
     };
     finalP2 = {
-      id: (p2.id && p2.id !== selfId && p2.id !== 'p1' && p2.id !== 'p2') ? p2.id : 'opponent',
-      name: oppName,
+      uid: p2Id || 'p2',
+      id: p2Id || 'p2',
+      name: p2Name,
+      username: p2Name,
+      displayName: p2Name,
       avatarUrl: p2.avatarUrl || ''
     };
   }
@@ -1835,7 +1856,62 @@ export default function App() {
     };
   }, [profile.id, reconnectCounter]);
 
-  const syncMatchState = (..._args: any[]) => {};
+  const syncMatchState = useCallback((
+    updatedAttempts: GameAttempt[],
+    attemptsCount: number,
+    completed: boolean,
+    won: boolean,
+    score: number = 0,
+    _finishTimestamp?: number
+  ) => {
+    if (!activeMatch) return;
+    const matchId = activeMatch.matchId || activeMatch.id;
+    if (!matchId) return;
+
+    const selfName = profile.name || profile.username || profile.displayName || 'Oyuncu';
+    const selfAvatar = profile.avatarUrl || '';
+
+    const playerState = {
+      uid: profile.id,
+      id: profile.id,
+      username: selfName,
+      displayName: selfName,
+      avatarUrl: selfAvatar,
+      attempts: updatedAttempts,
+      attemptsCount,
+      completed,
+      won,
+      score,
+      status: completed ? (won ? 'won' : 'lost') : 'playing',
+      gameState: completed ? 'FINISHED' : 'PLAYING',
+      roomId: matchId,
+      updatedAt: new Date().toISOString()
+    };
+
+    const payload: any = {
+      roomId: matchId,
+      [`players.${profile.id}`]: playerState
+    };
+
+    if (won || completed) {
+      if (won) {
+        payload.won = true;
+        payload.gameOver = true;
+        payload.isGameOver = true;
+        payload.winner = profile.id;
+        payload.winnerId = profile.id;
+        payload.finishedBy = profile.id;
+        payload.status = 'finished';
+        payload.gameState = 'finished';
+      }
+    }
+
+    const matchRef = doc(db, 'matches', matchId);
+    const roomRef = doc(db, 'rooms', matchId);
+
+    setDoc(matchRef, payload, { merge: true }).catch((err) => console.warn('syncMatchState matches error:', err));
+    setDoc(roomRef, payload, { merge: true }).catch((err) => console.warn('syncMatchState rooms error:', err));
+  }, [activeMatch, profile]);
 
 
   // Yumuşak Sıfırlama (Soft Reset) Fonksiyonu
@@ -2180,17 +2256,19 @@ export default function App() {
     };
   }, [activeMatch?.id, activeMatch?.matchId, profile.id]);
 
-  // Helper function to inspect match document and trigger immediate match end on victory/defeat
+  // Helper function to inspect match/room document and trigger immediate match end on victory/defeat
   const checkAndTriggerMatchEnd = useCallback((matchData: any) => {
     if (!matchData) return false;
     const winningPlayerEntry = Object.entries(matchData.players || {}).find(([_, p]: [string, any]) => p?.won === true || (p?.completed === true && p?.won === true));
     
-    const winnerId = matchData.winner || 
-                     matchData.winnerId || 
-                     matchData.finishedBy || 
-                     (winningPlayerEntry ? winningPlayerEntry[0] : null);
+    let winnerId = matchData.winnerId || 
+                   matchData.winner || 
+                   matchData.finishedBy || 
+                   (winningPlayerEntry ? winningPlayerEntry[0] : null);
 
     const isFinished = matchData.isGameOver === true || 
+                       matchData.gameOver === true ||
+                       matchData.won === true ||
                        matchData.status === 'finished' || 
                        matchData.status === 'ended' ||
                        matchData.status === 'completed' ||
@@ -2200,15 +2278,16 @@ export default function App() {
                        Boolean(winnerId) ||
                        Boolean(winningPlayerEntry);
 
-    if (isFinished && winnerId) {
-      console.log(`[Real-time Match Sync] Match end detected! Winner: ${winnerId}`);
-      handleInstantMatchEndRef.current(winnerId, matchData);
+    if (isFinished) {
+      const finalWinnerId = winnerId || (winningPlayerEntry ? winningPlayerEntry[0] : 'opponent');
+      console.log(`[Real-time Match Sync] Match end detected! Winner: ${finalWinnerId}`);
+      handleInstantMatchEndRef.current(finalWinnerId, matchData);
       return true;
     }
     return false;
   }, []);
 
-  // Real-time Firestore subscription + fast polling backup (800ms) for instantaneous duel ending on real Android APKs
+  // Real-time Firestore subscription + fast polling backup (800ms) for room and match document
   useEffect(() => {
     const matchId = activeMatch?.matchId || activeMatch?.id;
     if (!matchId) return;
@@ -2221,11 +2300,37 @@ export default function App() {
     const matchRef = doc(db, 'matches', matchId);
     const roomRef = doc(db, 'rooms', matchId);
 
-    console.log(`Subscribing to real-time Firestore listeners for match document: ${matchId}`);
+    console.log(`Subscribing to real-time Firestore listeners for match/room document: ${matchId}`);
     
+    const processRoomSnapshotData = (data: any) => {
+      if (!data) return;
+
+      setActiveMatch((prev: any) => {
+        if (!prev) return prev;
+        const currentPlayers = prev.players || {};
+        const incomingPlayers = data.players || {};
+        const mergedPlayers = { ...currentPlayers };
+
+        Object.keys(incomingPlayers).forEach((pId) => {
+          mergedPlayers[pId] = {
+            ...(currentPlayers[pId] || {}),
+            ...(incomingPlayers[pId] || {})
+          };
+        });
+
+        return {
+          ...prev,
+          ...data,
+          players: mergedPlayers
+        };
+      });
+
+      checkAndTriggerMatchEnd(data);
+    };
+
     const unsubMatch = onSnapshot(matchRef, (snapshot) => {
       if (snapshot.exists()) {
-        checkAndTriggerMatchEnd(snapshot.data());
+        processRoomSnapshotData(snapshot.data());
       }
     }, (error) => {
       console.warn(`Firestore snapshot subscription notice for matches/${matchId}:`, error);
@@ -2233,9 +2338,11 @@ export default function App() {
 
     const unsubRoom = onSnapshot(roomRef, (snapshot) => {
       if (snapshot.exists()) {
-        checkAndTriggerMatchEnd(snapshot.data());
+        processRoomSnapshotData(snapshot.data());
       }
-    }, () => {});
+    }, (error) => {
+      console.warn(`Firestore snapshot subscription notice for rooms/${matchId}:`, error);
+    });
 
     matchUnsubscribeRef.current = () => {
       unsubMatch();
@@ -2247,12 +2354,11 @@ export default function App() {
       try {
         const matchSnap = await getDoc(matchRef);
         if (matchSnap.exists()) {
-          const ended = checkAndTriggerMatchEnd(matchSnap.data());
-          if (ended) return;
+          processRoomSnapshotData(matchSnap.data());
         }
         const roomSnap = await getDoc(roomRef);
         if (roomSnap.exists()) {
-          checkAndTriggerMatchEnd(roomSnap.data());
+          processRoomSnapshotData(roomSnap.data());
         }
       } catch (e) {
         // Silently ignore polling network blips
@@ -2813,12 +2919,18 @@ export default function App() {
           const matchRef = doc(db, 'matches', matchId);
           const roomRef = doc(db, 'rooms', matchId);
           const finishPayload = {
+            gameOver: true,
             isGameOver: true, 
+            won: true,
             winner: profile.id, 
             winnerId: profile.id, 
             finishedBy: profile.id, 
             status: 'finished', 
             gameState: 'finished',
+            [`players.${profile.id}.won`]: true,
+            [`players.${profile.id}.completed`]: true,
+            [`players.${profile.id}.status`]: 'won',
+            [`players.${profile.id}.gameState`]: 'FINISHED',
             updatedAt: new Date().toISOString()
           };
 
@@ -3801,6 +3913,8 @@ export default function App() {
       activeMatch.status === 'completed' ||
       activeMatch.status === 'won' ||
       activeMatch.isGameOver === true ||
+      activeMatch.gameOver === true ||
+      activeMatch.won === true ||
       activeMatch.gameState === 'FINISHED' ||
       activeMatch.gameState === 'finished' ||
       Boolean(activeMatch.winner || activeMatch.winnerId) ||
