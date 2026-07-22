@@ -1092,7 +1092,7 @@ async function startServer() {
         if (data.type === 'join' || data.type === 'identify') {
           const clientInfo = {
             id: data.id || data.userId || 'guest_' + Math.random().toString(36).substring(2, 7),
-            name: data.name || 'Oyuncu',
+            name: data.name || data.username || data.displayName || 'Oyuncu',
             avatarUrl: data.avatarUrl || ''
           };
           connectedClients.set(ws, clientInfo);
@@ -1100,11 +1100,13 @@ async function startServer() {
         } else if (data.type === 'ping') {
           sendWs(ws, { type: 'pong' });
         } else if (data.type === 'join_matchmaking') {
-          const player = connectedClients.get(ws) || {
-            id: data.id || 'p_' + Date.now(),
-            name: data.name || 'Oyuncu',
-            avatarUrl: data.avatarUrl || ''
-          };
+          const existingClient = connectedClients.get(ws);
+          const playerId = data.id || data.userId || data.playerId || existingClient?.id || 'p_' + Date.now();
+          const playerName = data.name || data.username || data.displayName || (existingClient?.name && existingClient.name !== 'Oyuncu' ? existingClient.name : '') || 'Oyuncu';
+          const playerAvatar = data.avatarUrl || existingClient?.avatarUrl || '';
+
+          const player = { id: playerId, name: playerName, avatarUrl: playerAvatar };
+          connectedClients.set(ws, player);
           const length = Number(data.wordLength) || 5;
 
           // Remove old queue entries for this ws if any
