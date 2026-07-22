@@ -202,7 +202,8 @@ const safeLocalStorage = {
 
 const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?: string; username?: string; displayName?: string; avatarUrl?: string }) => {
   const selfId = profile.id;
-  const selfName = profile.name || profile.username || profile.displayName || 'Oyuncu';
+  const savedUsername = safeLocalStorage.getItem('saved_username');
+  const selfName = profile.name || profile.username || profile.displayName || savedUsername || 'Oyuncu';
   const selfUsername = profile.username || selfName;
   const selfAvatar = profile.avatarUrl || '';
 
@@ -212,8 +213,11 @@ const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?
   const p1Id = p1.id || p1.uid || p1.playerId;
   const p2Id = p2.id || p2.uid || p2.playerId;
 
-  const p1IsSelf = p1Id === selfId || (p1.name && p1.name === selfName && p1.name !== 'Oyuncu 1' && p1.name !== 'Oyuncu 2');
-  const p2IsSelf = p2Id === selfId || (p2.name && p2.name === selfName && p2.name !== 'Oyuncu 1' && p2.name !== 'Oyuncu 2');
+  const p1RawName = p1.name || p1.username || p1.displayName;
+  const p2RawName = p2.name || p2.username || p2.displayName;
+
+  const p1IsSelf = (p1Id && p1Id === selfId) || (p1RawName && (p1RawName === selfName || p1RawName === profile.name) && p1RawName !== 'Oyuncu 1' && p1RawName !== 'Oyuncu 2');
+  const p2IsSelf = (p2Id && p2Id === selfId) || (p2RawName && (p2RawName === selfName || p2RawName === profile.name) && p2RawName !== 'Oyuncu 1' && p2RawName !== 'Oyuncu 2');
 
   let finalP1: any;
   let finalP2: any;
@@ -228,9 +232,8 @@ const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?
       avatarUrl: selfAvatar || p1.avatarUrl || ''
     };
     const oppId = (p2Id && p2Id !== selfId && p2Id !== 'p1' && p2Id !== 'p2') ? p2Id : 'opponent';
-    const oppRawName = p2.username || p2.name || p2.displayName;
-    const oppName = (oppRawName && oppRawName !== selfName && oppRawName !== 'Oyuncu 1' && oppRawName !== 'Oyuncu 2')
-      ? oppRawName
+    const oppName = (p2RawName && p2RawName !== selfName && p2RawName !== 'Oyuncu 1' && p2RawName !== 'Oyuncu 2' && p2RawName !== 'Oyuncu')
+      ? p2RawName
       : 'Rakip';
     finalP2 = {
       uid: oppId,
@@ -250,9 +253,8 @@ const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?
       avatarUrl: selfAvatar || p2.avatarUrl || ''
     };
     const oppId = (p1Id && p1Id !== selfId && p1Id !== 'p1' && p1Id !== 'p2') ? p1Id : 'opponent';
-    const oppRawName = p1.username || p1.name || p1.displayName;
-    const oppName = (oppRawName && oppRawName !== selfName && oppRawName !== 'Oyuncu 1' && oppRawName !== 'Oyuncu 2')
-      ? oppRawName
+    const oppName = (p1RawName && p1RawName !== selfName && p1RawName !== 'Oyuncu 1' && p1RawName !== 'Oyuncu 2' && p1RawName !== 'Oyuncu')
+      ? p1RawName
       : 'Rakip';
     finalP1 = {
       uid: oppId,
@@ -263,36 +265,43 @@ const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?
       avatarUrl: p1.avatarUrl || ''
     };
   } else {
-    const p1RawName = p1.username || p1.name || p1.displayName;
-    const p1Name = (p1RawName && p1RawName !== selfName) ? p1RawName : 'Oyuncu 1';
-    const p2RawName = p2.username || p2.name || p2.displayName;
-    const p2Name = (p2RawName && p2RawName !== selfName) ? p2RawName : 'Oyuncu 2';
+    // Neither was explicitly matched as self (e.g. dummy/placeholder IDs like 'p1' / 'p2')
+    // Always assign Player 1 as Self (the current user) and Player 2 as Opponent
+    const oppName = (p2RawName && p2RawName !== selfName && p2RawName !== 'Oyuncu 1' && p2RawName !== 'Oyuncu 2' && p2RawName !== 'Oyuncu')
+      ? p2RawName
+      : ((p1RawName && p1RawName !== selfName && p1RawName !== 'Oyuncu 1' && p1RawName !== 'Oyuncu 2' && p1RawName !== 'Oyuncu') ? p1RawName : 'Rakip');
+
+    const oppId = (p2Id && p2Id !== selfId && p2Id !== 'p1' && p2Id !== 'p2') 
+      ? p2Id 
+      : ((p1Id && p1Id !== selfId && p1Id !== 'p1' && p1Id !== 'p2') ? p1Id : 'opponent');
 
     finalP1 = {
-      uid: p1Id || 'p1',
-      id: p1Id || 'p1',
-      name: p1Name,
-      username: p1Name,
-      displayName: p1Name,
-      avatarUrl: p1.avatarUrl || ''
+      uid: selfId,
+      id: selfId,
+      name: selfName,
+      username: selfUsername,
+      displayName: selfName,
+      avatarUrl: selfAvatar || p1.avatarUrl || ''
     };
     finalP2 = {
-      uid: p2Id || 'p2',
-      id: p2Id || 'p2',
-      name: p2Name,
-      username: p2Name,
-      displayName: p2Name,
-      avatarUrl: p2.avatarUrl || ''
+      uid: oppId,
+      id: oppId,
+      name: oppName,
+      username: oppName,
+      displayName: oppName,
+      avatarUrl: p2.avatarUrl || p1.avatarUrl || ''
     };
   }
+
+  const parsedPlayers = {
+    [finalP1.id]: { id: finalP1.id, name: finalP1.name, avatarUrl: finalP1.avatarUrl },
+    [finalP2.id]: { id: finalP2.id, name: finalP2.name, avatarUrl: finalP2.avatarUrl }
+  };
 
   return {
     player1: finalP1,
     player2: finalP2,
-    players: {
-      [finalP1.id]: finalP1,
-      [finalP2.id]: finalP2
-    }
+    players: parsedPlayers
   };
 };
 
@@ -1598,7 +1607,7 @@ export default function App() {
               ws?.send(JSON.stringify({
                 type: 'join',
                 id: profile.id,
-                name: profile.name || 'Oyuncu',
+                name: profile.name || profile.username || profile.displayName || safeLocalStorage.getItem('saved_username') || 'Oyuncu',
                 avatarUrl: profile.avatarUrl || ''
               }));
             } catch (e) {
@@ -3581,6 +3590,7 @@ export default function App() {
     }
 
     const targetLen = matchWordsCount || duelWordLength || 5;
+    const selfName = profile.name || profile.username || profile.displayName || safeLocalStorage.getItem('saved_username') || 'Oyuncu';
 
     // Send WebSocket join if available
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -3589,7 +3599,7 @@ export default function App() {
           type: 'join_matchmaking',
           wordLength: targetLen,
           id: profile.id,
-          name: profile.name || 'Oyuncu',
+          name: selfName,
           avatarUrl: profile.avatarUrl || ''
         }));
       } catch (e) {
@@ -3606,7 +3616,7 @@ export default function App() {
       const queueData = {
         id: profile.id,
         playerId: profile.id,
-        name: profile.name || 'Oyuncu',
+        name: selfName,
         avatarUrl: profile.avatarUrl || '',
         wordLength: targetLen,
         status: 'waiting',
@@ -4810,44 +4820,93 @@ export default function App() {
                     {/* Player Round Statistics */}
                     <div className="bg-black/25 rounded-2xl border border-white/5 p-3 mb-2 space-y-1.5 shrink-0">
                       <h4 className="text-[9px] font-black text-amber-300/80 tracking-widest uppercase font-mono text-left font-bold">OYUNCU DETAYLARI</h4>
-                      {Object.entries(activeMatch.players || {}).map(([pId, playerState]: [string, any]) => {
-                        const isSelf = pId === profile.id;
-                        const isWonPlayer = pId === matchWinnerId || 
-                                            Boolean(playerState?.won) || 
-                                            (isSelf && isWinner);
-                        const pAttempts = (isSelf && attempts.length > 0) 
-                          ? attempts 
-                          : (activeMatch.attempts?.[pId] || playerState?.attempts || []);
-                        
-                        const attemptCount = pAttempts.length;
+                      {(() => {
+                        const { player1: resolvedP1, player2: resolvedP2 } = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, profile);
+                        const duelPlayers = [resolvedP1, resolvedP2].filter(Boolean);
 
-                        let statusText = '';
-                        if (isWonPlayer) {
-                          const count = attemptCount > 0 ? attemptCount : 1;
-                          statusText = `${count}. Denemede BİLDİ (KAZANDI)`;
-                        } else if (attemptCount > 0) {
-                          statusText = `${attemptCount} Denemede BİLEMEDİ`;
-                        } else {
-                          statusText = 'BİLEMEDİ';
-                        }
+                        return duelPlayers.map((p: any, index: number) => {
+                          const pId = p.id || p.uid || (index === 0 ? 'p1' : 'p2');
+                          const isSelf = pId === profile.id || p.id === profile.id || p.uid === profile.id;
 
-                        return (
-                          <div key={pId} className="flex justify-between items-center text-[11px]">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`w-1.5 h-1.5 rounded-full ${isWonPlayer ? 'bg-emerald-400' : 'bg-rose-400'}`} />
-                              <span className={`font-black uppercase tracking-wider ${isSelf ? 'text-amber-400' : 'text-gray-300'}`}>
-                                {playerState.name || (isSelf ? profile.name : 'Rakip')} {isSelf ? '(Sen)' : ''}
-                              </span>
+                          // Determine clean display name
+                          let displayName = '';
+                          if (isSelf) {
+                            displayName = `${profile.name || profile.username || profile.displayName || 'Oyuncu'} (Sen)`;
+                          } else {
+                            const rawName = p.name || p.username || p.displayName;
+                            if (rawName && rawName !== 'Oyuncu 1' && rawName !== 'Oyuncu 2' && rawName !== 'p1' && rawName !== 'p2' && rawName !== profile.name) {
+                              displayName = rawName;
+                            } else {
+                              // Fallback check in activeMatch.players or opponentName
+                              const foundOppInPlayers = Object.entries(activeMatch.players || {}).find(([k, v]: [string, any]) => 
+                                k !== profile.id && v?.name && v.name !== 'Oyuncu 1' && v.name !== 'Oyuncu 2'
+                              );
+                              if (foundOppInPlayers) {
+                                displayName = (foundOppInPlayers[1] as any).name;
+                              } else if (activeMatch.opponentName) {
+                                displayName = activeMatch.opponentName;
+                              } else {
+                                displayName = 'Rakip';
+                              }
+                            }
+                          }
+
+                          // Determine attempts
+                          let pAttempts: any[] = [];
+                          if (isSelf) {
+                            pAttempts = attempts.length > 0 
+                              ? attempts 
+                              : (activeMatch.attempts?.[profile.id] || activeMatch.players?.[profile.id]?.attempts || []);
+                          } else {
+                            pAttempts = activeMatch.attempts?.[pId] || 
+                                        activeMatch.players?.[pId]?.attempts || 
+                                        activeMatch.attempts?.['p2'] || 
+                                        activeMatch.attempts?.['p1'] || 
+                                        activeMatch.players?.['p1']?.attempts || 
+                                        activeMatch.players?.['p2']?.attempts || 
+                                        activeMatch.opponentAttempts || [];
+                          }
+
+                          const attemptCount = pAttempts.length;
+
+                          // Determine win status
+                          let isWonPlayer = false;
+                          if (isSelf) {
+                            isWonPlayer = matchWinnerId === profile.id || isWinner;
+                          } else {
+                            isWonPlayer = matchWinnerId === pId || 
+                                         (Boolean(matchWinnerId) && matchWinnerId !== profile.id && matchWinnerId !== 'draw') || 
+                                         (!isWinner && !isDraw && Boolean(matchWinnerId));
+                          }
+
+                          let statusText = '';
+                          if (isWonPlayer) {
+                            const count = attemptCount > 0 ? attemptCount : 1;
+                            statusText = `${count}. Denemede BİLDİ (KAZANDI)`;
+                          } else if (attemptCount > 0) {
+                            statusText = `${attemptCount} Denemede BİLEMEDİ`;
+                          } else {
+                            statusText = 'BİLEMEDİ';
+                          }
+
+                          return (
+                            <div key={pId + '_' + index} className="flex justify-between items-center text-[11px]">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`w-1.5 h-1.5 rounded-full ${isWonPlayer ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                                <span className={`font-black uppercase tracking-wider ${isSelf ? 'text-amber-400' : 'text-gray-300'}`}>
+                                  {displayName}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 font-mono font-bold">
+                                <span className="text-gray-400">Durum:</span>
+                                <span className={isWonPlayer ? 'text-emerald-400 font-extrabold' : 'text-rose-400 font-medium'}>
+                                  {statusText}
+                                </span>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2 font-mono font-bold">
-                              <span className="text-gray-400">Durum:</span>
-                              <span className={isWonPlayer ? 'text-emerald-400 font-extrabold' : 'text-rose-400 font-medium'}>
-                                {statusText}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        });
+                      })()}
                     </div>
                   </>
                 );
