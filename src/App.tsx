@@ -3863,13 +3863,7 @@ export default function App() {
           <div className="absolute -top-24 -left-24 w-48 h-48 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-teal-500/5 rounded-full blur-3xl pointer-events-none" />
 
-          {isMatchEnded && isAndroidApp && (
-            <div className="absolute inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
-              <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4" />
-              <h2 className="text-xl font-black text-white tracking-wide mb-2 uppercase">DÜELLO TAMAMLANDI!</h2>
-              <p className="text-xs text-slate-400">Sonuç ekranına güvenli bir şekilde yönlendiriliyorsunuz...</p>
-            </div>
-          )}
+
 
           {/* Matchmaking Searching Queue Card */}
           {matchmakingStatus === 'queued' && !activeMatch && (
