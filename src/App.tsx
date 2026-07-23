@@ -1,3 +1,4 @@
+// Complete rebuild stamp for GitHub Actions: 2026-07-23 v1.0.2
 import { useState, useEffect, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
 import {

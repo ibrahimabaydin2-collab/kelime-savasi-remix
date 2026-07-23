@@ -1,3 +1,4 @@
+// Complete rebuild stamp: 2026-07-23 v1.0.2
 import { Sun, Moon, BarChart2, Award, Users, RefreshCw, Sliders, Target } from 'lucide-react';
 
 interface HeaderProps {

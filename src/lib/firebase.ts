@@ -1,3 +1,4 @@
+// Complete rebuild stamp for GitHub Actions: 2026-07-23 v1.0.2
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 

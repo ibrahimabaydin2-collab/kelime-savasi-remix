@@ -1,3 +1,4 @@
+// Complete rebuild stamp: 2026-07-23 v1.0.2
 import { motion } from 'motion/react';
 import { Delete } from 'lucide-react';
 
