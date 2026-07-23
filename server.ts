@@ -1076,6 +1076,124 @@ async function startServer() {
     }
   });
 
+  // Dual HTTP REST guess submission endpoint for hybrid/mobile APK compatibility
+  app.post('/api/submit-guess', async (req, res) => {
+    try {
+      const { matchId, playerId, word, guess } = req.body || {};
+      const targetMatchId = String(matchId || '').trim();
+      const targetPlayerId = String(playerId || '').trim();
+      const guessWord = turkishUpper(String(word || guess || '').trim());
+
+      if (!targetMatchId || !targetPlayerId || !guessWord) {
+        return res.status(400).json({ error: 'matchId, playerId, and word are required' });
+      }
+
+      const match = activeDuelMatches.get(targetMatchId);
+      let correctWord = match?.correctWord || '';
+
+      if (!correctWord) {
+        const matchSnap = await getDoc(doc(db, 'matches', targetMatchId));
+        if (matchSnap.exists()) {
+          const d = matchSnap.data();
+          correctWord = d.targetWord || d.correctWord || '';
+        }
+      }
+
+      if (!correctWord) {
+        return res.status(404).json({ error: 'Match or target word not found' });
+      }
+
+      const feedback = evaluateTurkishGuess(guessWord, correctWord);
+      const isCorrect = feedback.every(f => f === 'correct');
+
+      if (match) {
+        const isP1 = match.player1.id === targetPlayerId;
+        const sender = isP1 ? match.player1 : match.player2;
+        const opponent = isP1 ? match.player2 : match.player1;
+
+        sender.attempts.push({ word: guessWord, result: feedback });
+
+        if (isCorrect) {
+          match.gameState = 'FINISHED';
+          match.winner = sender.id;
+          match.loser = opponent.id;
+          match.winReason = 'correct_word';
+          match.finishedAt = Date.now();
+
+          const winFinishData = {
+            gameOver: true,
+            isGameOver: true,
+            won: true,
+            status: 'finished',
+            gameState: 'finished',
+            winner: sender.id,
+            winnerId: sender.id,
+            finishedBy: sender.id,
+            loser: opponent.id,
+            winReason: 'correct_word',
+            updatedAt: new Date().toISOString()
+          };
+          setDoc(doc(db, 'matches', targetMatchId), winFinishData, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'rooms', targetMatchId), winFinishData, { merge: true }).catch(() => {});
+
+          sendWs(sender.ws, { type: 'guess_result', matchId: targetMatchId, word: guessWord, feedback, isCorrect: true, isGameOver: true });
+          const endPayload = {
+            type: 'match_end',
+            matchId: targetMatchId,
+            gameState: 'FINISHED',
+            winner: sender.id,
+            loser: opponent.id,
+            winnerName: sender.name,
+            loserName: opponent.name,
+            winReason: 'correct_word',
+            correctWord,
+            attempts: { [match.player1.id]: match.player1.attempts, [match.player2.id]: match.player2.attempts }
+          };
+          sendWs(match.player1.ws, endPayload);
+          sendWs(match.player2.ws, endPayload);
+        } else {
+          const attemptUpdate = {
+            [`players.${sender.id}.attempts`]: sender.attempts,
+            [`players.${sender.id}.attemptsCount`]: sender.attempts.length,
+            [`players.${sender.id}.completed`]: sender.attempts.length >= 6,
+            updatedAt: new Date().toISOString()
+          };
+          setDoc(doc(db, 'matches', targetMatchId), attemptUpdate, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'rooms', targetMatchId), attemptUpdate, { merge: true }).catch(() => {});
+
+          sendWs(sender.ws, { type: 'guess_result', matchId: targetMatchId, word: guessWord, feedback, isCorrect: false, isGameOver: false });
+          sendWs(opponent.ws, { type: 'opponent_attempt', matchId: targetMatchId, opponentId: sender.id, attemptCount: sender.attempts.length });
+        }
+      } else {
+        const attemptUpdate = {
+          [`players.${targetPlayerId}.attempts`]: [{ word: guessWord, feedback }],
+          updatedAt: new Date().toISOString()
+        };
+        if (isCorrect) {
+          Object.assign(attemptUpdate, {
+            gameOver: true,
+            isGameOver: true,
+            status: 'finished',
+            gameState: 'finished',
+            winner: targetPlayerId,
+            winnerId: targetPlayerId,
+            finishedBy: targetPlayerId,
+            winReason: 'correct_word',
+            [`players.${targetPlayerId}.won`]: true,
+            [`players.${targetPlayerId}.completed`]: true
+          });
+        }
+        setDoc(doc(db, 'matches', targetMatchId), attemptUpdate, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'rooms', targetMatchId), attemptUpdate, { merge: true }).catch(() => {});
+      }
+
+      return res.json({ success: true, feedback, isCorrect });
+    } catch (err) {
+      console.error('Error submitting guess via REST:', err);
+      return res.status(500).json({ error: 'Failed to submit guess' });
+    }
+  });
+
   function sendWs(ws: WebSocket | null | undefined, dataObj: any) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {

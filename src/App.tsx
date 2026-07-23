@@ -2961,17 +2961,38 @@ export default function App() {
         return;
       }
 
-      // Server Authoritative / Hybrid Duel & Solo Guess Submission
-      if (activeMatch && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      // Server Authoritative / Hybrid Duel & Solo Guess Submission (WebSocket + REST Fallback)
+      if (activeMatch) {
+        const targetMatchId = activeMatch.matchId || activeMatch.id;
+        
+        // 1. WebSocket Channel
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          try {
+            socketRef.current.send(JSON.stringify({
+              type: 'submit_guess',
+              matchId: targetMatchId,
+              word: guess,
+              playerId: profile.id
+            }));
+          } catch (e) {
+            console.warn('[WebSocket] Error sending submit_guess:', e);
+          }
+        }
+
+        // 2. Dual REST API Channel (ensures delivery even if WebSocket connection drops in background/native)
         try {
-          socketRef.current.send(JSON.stringify({
-            type: 'submit_guess',
-            matchId: activeMatch.matchId || activeMatch.id,
-            word: guess,
-            playerId: profile.id
-          }));
+          void fetch(getApiUrl('/api/submit-guess'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              matchId: targetMatchId,
+              playerId: profile.id,
+              word: guess,
+              guess
+            })
+          }).catch((err) => console.warn('[REST Submit Guess] Network warning:', err));
         } catch (e) {
-          console.warn('[WebSocket] Error sending submit_guess:', e);
+          console.warn('[REST Submit Guess] Error firing HTTP guess request:', e);
         }
       }
 
@@ -3048,8 +3069,8 @@ export default function App() {
             [`players.${profile.id}.completed`]: (hasWon || updatedAttempts.length >= 6),
             [`players.${profile.id}.won`]: hasWon
           };
-          updateDoc(matchRef, playerUpdate).catch(err => console.warn('Non-blocking Firestore update error:', err));
-          updateDoc(roomRef, playerUpdate).catch(() => {});
+          setDoc(matchRef, playerUpdate, { merge: true }).catch(err => console.warn('Non-blocking Firestore update error:', err));
+          setDoc(roomRef, playerUpdate, { merge: true }).catch(() => {});
         }
 
         if (hasWon) {
@@ -3874,7 +3895,7 @@ export default function App() {
         await setDoc(doc(db, 'rooms', matchId), matchPayload);
 
         // Notify opponent via their queue document
-        await updateDoc(doc(db, 'matchmaking_queue', oppId), {
+        await setDoc(doc(db, 'matchmaking_queue', oppId), {
           status: 'matched',
           matchId,
           correctWord: word,
@@ -3884,7 +3905,7 @@ export default function App() {
           player2: matchPayload.player2,
           players: matchPayload.players,
           opponent: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar }
-        }).catch((err) => {
+        }, { merge: true }).catch((err) => {
           console.warn("[Firestore Matchmaking] Failed updating opponent queue doc:", err);
         });
 
