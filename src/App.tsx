@@ -1768,6 +1768,35 @@ export default function App() {
               playEnterSound(settings.soundEnabled);
             } else if (data.type === 'opponent_attempt') {
               showToast(`Rakip bir tahmin yaptı! (${data.attemptCount}. deneme)`, 'info');
+              setActiveMatch((prev: any) => {
+                if (!prev) return null;
+                const currentAuthUid = auth.currentUser?.uid;
+                const selfId = currentAuthUid || profile.id;
+                const oppId = data.opponentId || Object.keys(prev.players || {}).find(id => id !== selfId && id !== profile.id) || 'opponent';
+                const updatedPlayers = { ...(prev.players || {}) };
+                const existingOpp = updatedPlayers[oppId] || { id: oppId, name: 'Rakip' };
+                const currentAttempts = Array.isArray(existingOpp.attempts) ? existingOpp.attempts : [];
+                
+                const targetCount = Number(data.attemptCount) || (currentAttempts.length + 1);
+                let newAttempts = [...currentAttempts];
+                while (newAttempts.length < targetCount) {
+                  newAttempts.push({ word: '*****', feedback: ['grey', 'grey', 'grey', 'grey', 'grey'] });
+                }
+
+                updatedPlayers[oppId] = {
+                  ...existingOpp,
+                  attempts: newAttempts
+                };
+
+                const updatedAttemptsMap = { ...(prev.attempts || {}) };
+                updatedAttemptsMap[oppId] = newAttempts;
+
+                return {
+                  ...prev,
+                  players: updatedPlayers,
+                  attempts: updatedAttemptsMap
+                };
+              });
             } else if (data.type === 'guess_rejected') {
               setIsValidating(false);
               console.warn('[Duel Server] Guess rejected:', data.reason);
@@ -1782,67 +1811,13 @@ export default function App() {
                 } catch (e) {}
               }
 
-              const isWinner = Boolean(profile?.id && data.winner === profile.id);
+              const winnerId = data.winner || data.winnerId;
               const isOpponentLeft = data.winReason === 'opponent_left';
-
               if (isOpponentLeft) {
                 setOpponentLeftDuringMatch(true);
               }
 
-              // Freeze gameStatus to idle so solo victory/loss UI is NOT triggered
-              setGameStatus('idle');
-              setShowCongratsModal(false);
-
-              setActiveMatch((prev: any) => {
-                const finalWinnerId = data.winner || data.winnerId || prev?.winnerId || prev?.winner;
-                const updatedPlayers = { ...(prev?.players || {}) };
-                Object.keys(updatedPlayers).forEach((pId) => {
-                  const isThisWinner = pId === finalWinnerId;
-                  const playerCurrentAttempts = (pId === profile?.id && attempts.length > 0)
-                    ? attempts
-                    : (data.attempts?.[pId] || updatedPlayers[pId]?.attempts || []);
-
-                  updatedPlayers[pId] = {
-                    ...updatedPlayers[pId],
-                    completed: true,
-                    won: isThisWinner,
-                    attempts: playerCurrentAttempts
-                  };
-                });
-
-                return {
-                  ...prev,
-                  gameState: 'FINISHED',
-                  status: 'ended',
-                  winner: finalWinnerId,
-                  winnerId: finalWinnerId,
-                  loserId: data.loser,
-                  winnerName: data.winnerName,
-                  winReason: data.winReason,
-                  correctWord: target,
-                  players: updatedPlayers
-                };
-              });
-
-              if (isWinner) {
-                playVictorySound(settings.soundEnabled);
-                triggerVictoryCelebration(settings.soundEnabled);
-
-                if (isOpponentLeft) {
-                  showToast('Rakip oyundan ayrıldı. 🏆 Kazandınız!', 'success');
-                } else {
-                  showToast('🏆 Tebrikler, Canlı Düelloyu Kazandınız!', 'success');
-                }
-
-                addGold(1);
-              } else {
-                playDefeatSound(settings.soundEnabled);
-                if (data.winner === 'draw') {
-                  showToast('Berabere! İki oyuncu da kelimeyi bulamadı.', 'info');
-                } else {
-                  showToast('❌ Kaybettiniz! Rakip kelimeyi önce buldu.', 'error');
-                }
-              }
+              handleInstantMatchEndRef.current(winnerId, data);
             } else if (data.type === 'opponent_left') {
               setOpponentLeftDuringMatch(true);
               showToast('Rakip oyundan ayrıldı.', 'info');
@@ -2093,17 +2068,31 @@ export default function App() {
     setGameStatus('idle');
 
     setActiveMatch((prev) => {
-      if (!prev) return prev;
+      const currentAuthUid = auth.currentUser?.uid;
+      const selfId = currentAuthUid || profile.id;
+      const oppId = matchData?.loser || matchData?.loserId || 'opponent';
+
+      const base = prev || {
+        id: currentMatchId || 'match_ended',
+        matchId: currentMatchId || 'match_ended',
+        wordLength: matchData?.wordLength || 5,
+        targetWord: matchData?.correctWord || matchData?.targetWord || '',
+        correctWord: matchData?.correctWord || matchData?.targetWord || '',
+        players: {
+          [selfId]: { id: selfId, name: profile.name || 'Sen', attempts: attempts },
+          [oppId]: { id: oppId, name: 'Rakip', attempts: [] }
+        }
+      };
       
-      const finalWinnerId = winnerId || matchData?.winner || matchData?.winnerId || prev.winner || prev.winnerId;
-      const updatedPlayers = { ...(prev.players || {}), ...(matchData?.players || {}) };
+      const finalWinnerId = winnerId || matchData?.winner || matchData?.winnerId || base.winner || base.winnerId;
+      const updatedPlayers = { ...(base.players || {}), ...(matchData?.players || {}) };
       
       // Synchronize the final states of players
       Object.keys(updatedPlayers).forEach((pId) => {
         const isThisWinner = pId === finalWinnerId;
-        const playerCurrentAttempts = (pId === profile.id && attempts.length > 0)
+        const playerCurrentAttempts = (pId === selfId && attempts.length > 0)
           ? attempts
-          : (updatedPlayers[pId]?.attempts || matchData?.players?.[pId]?.attempts || []);
+          : (updatedPlayers[pId]?.attempts || matchData?.players?.[pId]?.attempts || matchData?.attempts?.[pId] || []);
 
         updatedPlayers[pId] = {
           ...updatedPlayers[pId],
@@ -2113,18 +2102,18 @@ export default function App() {
         };
       });
 
-      const target = matchData?.targetWord || matchData?.correctWord || prev.targetWord || prev.correctWord;
+      const target = matchData?.targetWord || matchData?.correctWord || base.targetWord || base.correctWord;
 
       return {
-        ...prev,
+        ...base,
         ...matchData,
         status: 'ended',
         gameState: 'FINISHED',
         isGameOver: true,
         winner: finalWinnerId,
         winnerId: finalWinnerId,
-        targetWord: target || prev.targetWord,
-        correctWord: target || prev.correctWord,
+        targetWord: target || base.targetWord,
+        correctWord: target || base.correctWord,
         players: updatedPlayers
       };
     });
