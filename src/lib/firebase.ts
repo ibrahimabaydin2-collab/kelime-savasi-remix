@@ -97,13 +97,15 @@ function createSafeFirestore() {
 
   try {
     return initializeFirestore(app, {
-      experimentalAutoDetectLongPolling: true,
+      experimentalForceLongPolling: isMobileOrHybrid,
+      experimentalAutoDetectLongPolling: !isMobileOrHybrid,
       localCache: cacheConfig
     }, dbId);
   } catch (err) {
     console.warn('[Firebase] Primary initializeFirestore failed, trying resilient fallback:', err);
     return initializeFirestore(app, {
-      experimentalAutoDetectLongPolling: true,
+      experimentalForceLongPolling: isMobileOrHybrid,
+      experimentalAutoDetectLongPolling: !isMobileOrHybrid,
       localCache: memoryLocalCache()
     }, dbId);
   }

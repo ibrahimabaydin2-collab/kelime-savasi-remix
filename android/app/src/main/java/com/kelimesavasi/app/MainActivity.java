@@ -41,11 +41,15 @@ public class MainActivity extends BridgeActivity {
 
         // Enable persistent WebView storage / database cache settings & JS support
         if (mWebView != null) {
+            mWebView.setKeepScreenOn(true);
             WebSettings webSettings = mWebView.getSettings();
             if (webSettings != null) {
                 webSettings.setJavaScriptEnabled(true);
                 webSettings.setDomStorageEnabled(true);
                 webSettings.setDatabaseEnabled(true);
+                webSettings.setAllowFileAccess(true);
+                webSettings.setAllowContentAccess(true);
+                webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
                 // Optimize rendering speed and graphics performance
                 webSettings.setRenderPriority(WebSettings.RenderPriority.HIGH);

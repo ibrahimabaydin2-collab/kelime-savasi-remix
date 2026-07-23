@@ -63,8 +63,10 @@ if (typeof window !== 'undefined') {
             input = url;
           } else if (input instanceof URL) {
             input = new URL(url);
-          } else if (input && typeof input === 'object') {
-            input = { ...input, url };
+          } else if (input instanceof Request) {
+            input = new Request(url, input);
+          } else {
+            input = url;
           }
         }
 
