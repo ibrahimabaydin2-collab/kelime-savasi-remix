@@ -22,7 +22,7 @@ import GoldWallet from './components/GoldWallet.js';
 import SettingsModal, { AppSettings } from './components/SettingsModal.js';
 import AuthScreen from './components/AuthScreen.js';
 import BadgeUnlockedModal from './components/BadgeUnlockedModal.js';
-import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, db } from './lib/firebase.js';
+import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase.js';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types.js';
 import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut } from 'lucide-react';
@@ -644,7 +644,6 @@ export default function App() {
   const [secondsLeft, setSecondsLeft] = useState<number>(20);
   const [isAppActive, setIsAppActive] = useState<boolean>(true);
   const [isValidating, setIsValidating] = useState<boolean>(false);
-  const [wordDefinition, setWordDefinition] = useState<string>('');
   const [letterStatuses, setLetterStatuses] = useState<{ [key: string]: 'green' | 'orange' | 'grey' }>({});
   const [revealedHints, setRevealedHints] = useState<{ [index: number]: string }>({});
   const [hintCount, setHintCount] = useState<number>(0);
@@ -798,7 +797,7 @@ export default function App() {
     }
 
     // Secondary fallback: just pick a random word of same length that isn't the target word and is linguistically valid
-    const allowed = wordList.filter(w => w.toLowerCase() !== targetLower && isLinguisticallyValid(w));
+    const allowed = wordList.filter(w => w.length === wordLength && w.toLowerCase() !== targetLower && isLinguisticallyValid(w));
     if (allowed.length > 0) {
       return turkishUpper(allowed[Math.floor(Math.random() * allowed.length)]);
     }
@@ -1118,11 +1117,8 @@ export default function App() {
   const [showMissionsModal, setShowMissionsModal] = useState<boolean>(false);
   const [showLobbyModal, setShowLobbyModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
-  const [showDefinitionModal, setShowDefinitionModal] = useState<boolean>(false);
   const [showCongratsModal, setShowCongratsModal] = useState<boolean>(false);
   const handledMatchEndIdsRef = useRef<Set<string>>(new Set());
-  const lastFetchedDefinitionWordRef = useRef<string>('');
-  const isFetchingDefinitionRef = useRef<boolean>(false);
   const [opponentLeftDuringMatch, setOpponentLeftDuringMatch] = useState<boolean>(false);
   const [isMatchmakingLocked, setIsMatchmakingLocked] = useState<boolean>(false);
   const [unlockedBadgeToShow, setUnlockedBadgeToShow] = useState<Badge | null>(null);
@@ -1233,6 +1229,26 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
     };
   }, [addNetworkLog]);
+
+  // Presence heartbeat effect in Firestore
+  useEffect(() => {
+    if (!profile?.id) return;
+    updateUserPresence(profile.id, true);
+
+    const interval = setInterval(() => {
+      updateUserPresence(profile.id, true);
+    }, 45000);
+
+    const handleUnload = () => {
+      updateUserPresence(profile.id, false);
+    };
+    window.addEventListener('beforeunload', handleUnload);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', handleUnload);
+    };
+  }, [profile?.id]);
 
   // Apply dark mode to document element
   useEffect(() => {
@@ -1445,42 +1461,8 @@ export default function App() {
                     const savedUsername = safeLocalStorage.getItem('saved_username');
                     const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
                     
-                    setProfile((prevProfile) => {
-                      let finalName = savedUsername || (prevProfile && prevProfile.name) || '';
-                      let finalAvatar = (prevProfile && prevProfile.avatarUrl) || '🧠';
-                      
-                      if (!finalName && savedProfileStr) {
-                        try {
-                          const parsed = JSON.parse(savedProfileStr);
-                          if (parsed && parsed.name) finalName = parsed.name;
-                          if (parsed && parsed.avatarUrl) finalAvatar = parsed.avatarUrl;
-                        } catch (e) {}
-                      }
-                      const updatedProfile = ensureProfileFields({
-                        ...(prevProfile || {}),
-                        id: user.uid,
-                        name: finalName,
-                        avatarUrl: finalAvatar,
-                        deviceId: deviceId,
-                        nameSet: !!finalName
-                      } as UserProfile);
-                      saveUserProfileToFirestore(updatedProfile).catch(err => console.warn(err));
-                      safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updatedProfile));
-                      if (updatedProfile.name) {
-                        safeLocalStorage.setItem('saved_username', updatedProfile.name);
-                      }
-                      return updatedProfile;
-                    });
-                  }
-                } catch (deviceCheckErr) {
-                  console.error('Error during automatic device profile recovery after auth:', deviceCheckErr);
-                  // Sync current profile state as fallback
-                  const savedUsername = safeLocalStorage.getItem('saved_username');
-                  const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
-                  
-                  setProfile((prevProfile) => {
-                    let finalName = savedUsername || (prevProfile && prevProfile.name) || '';
-                    let finalAvatar = (prevProfile && prevProfile.avatarUrl) || '🧠';
+                    let finalName = savedUsername || (profile && profile.name) || '';
+                    let finalAvatar = (profile && profile.avatarUrl) || '🧠';
                     
                     if (!finalName && savedProfileStr) {
                       try {
@@ -1490,20 +1472,52 @@ export default function App() {
                       } catch (e) {}
                     }
                     const updatedProfile = ensureProfileFields({
-                      ...(prevProfile || {}),
+                      ...(profile || {}),
                       id: user.uid,
                       name: finalName,
                       avatarUrl: finalAvatar,
                       deviceId: deviceId,
                       nameSet: !!finalName
                     } as UserProfile);
-                    saveUserProfileToFirestore(updatedProfile).catch(err => console.warn(err));
+
+                    setProfile(updatedProfile);
                     safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updatedProfile));
                     if (updatedProfile.name) {
                       safeLocalStorage.setItem('saved_username', updatedProfile.name);
                     }
-                    return updatedProfile;
-                  });
+                    saveUserProfileToFirestore(updatedProfile).catch(err => console.warn(err));
+                  }
+                } catch (deviceCheckErr) {
+                  console.error('Error during automatic device profile recovery after auth:', deviceCheckErr);
+                  // Sync current profile state as fallback
+                  const savedUsername = safeLocalStorage.getItem('saved_username');
+                  const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
+                  
+                  let finalName = savedUsername || (profile && profile.name) || '';
+                  let finalAvatar = (profile && profile.avatarUrl) || '🧠';
+                  
+                  if (!finalName && savedProfileStr) {
+                    try {
+                      const parsed = JSON.parse(savedProfileStr);
+                      if (parsed && parsed.name) finalName = parsed.name;
+                      if (parsed && parsed.avatarUrl) finalAvatar = parsed.avatarUrl;
+                    } catch (e) {}
+                  }
+                  const updatedProfile = ensureProfileFields({
+                    ...(profile || {}),
+                    id: user.uid,
+                    name: finalName,
+                    avatarUrl: finalAvatar,
+                    deviceId: deviceId,
+                    nameSet: !!finalName
+                  } as UserProfile);
+
+                  setProfile(updatedProfile);
+                  safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updatedProfile));
+                  if (updatedProfile.name) {
+                    safeLocalStorage.setItem('saved_username', updatedProfile.name);
+                  }
+                  saveUserProfileToFirestore(updatedProfile).catch(err => console.warn(err));
                 }
               }
 
@@ -1807,9 +1821,6 @@ export default function App() {
               const target = data.correctWord || activeMatch?.targetWord || activeMatch?.correctWord || targetWord || '';
               if (target) {
                 setTargetWord(target);
-                try {
-                  void fetchTargetWordDefinition(target).catch(() => {});
-                } catch (e) {}
               }
 
               const winnerId = data.winner || data.winnerId;
@@ -1902,6 +1913,7 @@ export default function App() {
     const playerState = {
       uid: currentUid,
       id: currentUid,
+      profileId: profile.id,
       name: selfName,
       username: selfName,
       displayName: selfName,
@@ -1919,8 +1931,14 @@ export default function App() {
 
     const payload: any = {
       roomId: matchId,
-      [`players.${currentUid}`]: playerState
+      [`players.${currentUid}`]: playerState,
+      [`attempts.${currentUid}`]: updatedAttempts
     };
+
+    if (profile.id && profile.id !== currentUid) {
+      payload[`players.${profile.id}`] = playerState;
+      payload[`attempts.${profile.id}`] = updatedAttempts;
+    }
 
     if (won || completed) {
       if (won) {
@@ -1996,7 +2014,6 @@ export default function App() {
     setTargetWord(picked);
     setGameStatus('playing');
     setSecondsLeft(20);
-    setWordDefinition('');
     setActiveMatch(null); // Çoklu oyuncu oda bağlantısını temizle
     setShowCongratsModal(false); // Tebrikler modalını kapat
   };
@@ -2122,9 +2139,6 @@ export default function App() {
     const wordToUse = matchData?.targetWord || matchData?.correctWord || targetWord || activeMatch?.targetWord || activeMatch?.correctWord || '';
     if (wordToUse) {
       setTargetWord(wordToUse);
-      try {
-        void fetchTargetWordDefinition(wordToUse).catch(() => {});
-      } catch (e) {}
     }
 
     if (winnerId === profile.id) {
@@ -2649,142 +2663,7 @@ export default function App() {
     };
   }, [isAppActive, gameStatus, attempts.length, isValidating, hasEnteredGame, gameMode, activeMatch, isDailyPuzzle, targetWord, currentWordIndex, targetWords, cumulativeScore]); // Resets interval on attempt submission or validation change or exit or gameMode change
 
-  // Fetch direct definition for the target word with single-attempt execution and no retry loops or sound warnings
-  const fetchTargetWordDefinition = async (wordToFetch: string, isManualRetry = false) => {
-    if (!wordToFetch) return;
-    const cleanWord = wordToFetch.trim();
-    if (!cleanWord) return;
 
-    // Prevent background retry loops for the exact same word unless user explicitly clicked manual retry
-    if (!isManualRetry && lastFetchedDefinitionWordRef.current === cleanWord) {
-      return;
-    }
-
-    if (isFetchingDefinitionRef.current && !isManualRetry) {
-      return;
-    }
-
-    lastFetchedDefinitionWordRef.current = cleanWord;
-    isFetchingDefinitionRef.current = true;
-
-    try {
-      setWordDefinition('loading');
-      
-      let definitionFound = false;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-      try {
-        console.log(`[Client Definition] Single attempt fetch for: "${cleanWord}"`);
-        const response = await fetch(getApiUrl('/api/get-definition'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ word: cleanWord }),
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const data = await response.json();
-          if (data && data.definition && typeof data.definition === 'string') {
-            const isGeneric = data.definition.includes('tanımına şu an ulaşılamıyor') ||
-                              data.definition.includes('yerel kelime listesinde');
-            
-            if (!isGeneric) {
-              setWordDefinition(data.definition);
-              definitionFound = true;
-              return;
-            }
-          }
-        }
-      } catch (e: any) {
-        clearTimeout(timeoutId);
-        console.warn('[Client Definition] Backend fetch skipped/failed:', e?.message || e);
-      }
-
-      if (definitionFound) return;
-
-      // Single fallback attempt via local dictionary/validation (no sound warnings or retry loops)
-      try {
-        const wikiRes = await validateWordClientSide(cleanWord, cleanWord.length);
-        if (wikiRes && wikiRes.valid && wikiRes.definition) {
-          const isGeneric = wikiRes.definition.includes('bulunamadı') || 
-                            wikiRes.definition.includes('Hata');
-                            
-          if (!isGeneric && wikiRes.definition.length > 5) {
-            let finalDef = wikiRes.definition;
-            if (finalDef.includes('yerel sözlükte bulundu')) {
-              finalDef = `${cleanWord.toUpperCase()} - Oyunda kullanılan geçerli bir Türkçe sözcüktür.`;
-            }
-            setWordDefinition(finalDef);
-            return;
-          }
-        }
-      } catch (wikiErr: any) {
-        console.warn('[Client Definition Fallback] Direct Wiktionary query failed:', wikiErr?.message || wikiErr);
-      }
-
-      // Hata durumunda sadece bir kez yüklemeyi dene, sessizce hata mesajını göster (sesli uyarı yok)
-      setWordDefinition('Kelime anlamı şu anda yüklenemedi.');
-    } catch (globalErr) {
-      console.warn('[Client Definition] Definition lookup error:', globalErr);
-      setWordDefinition('Kelime anlamı şu anda yüklenemedi.');
-    } finally {
-      isFetchingDefinitionRef.current = false;
-    }
-  };
-
-  // Prefetch target word definition in the background when the target word is determined (active game)
-  useEffect(() => {
-    if (targetWord) {
-      try {
-        void fetchTargetWordDefinition(targetWord).catch(() => {});
-      } catch (e) {}
-    } else {
-      setWordDefinition('');
-      lastFetchedDefinitionWordRef.current = '';
-    }
-  }, [targetWord]);
-
-  const renderWordDefinition = (themeColor: 'emerald' | 'rose') => {
-    if (!wordDefinition) return null;
-
-    if (wordDefinition === 'loading') {
-      return (
-        <div className="w-full max-w-sm mx-auto p-4 bg-black/10 rounded-2xl border border-[#3E485A] flex items-center justify-center gap-2 animate-pulse py-4 text-center my-2">
-          <div className="w-3.5 h-3.5 rounded-full border-2 border-amber-500 border-t-transparent animate-spin" />
-          <span className="text-[10px] text-gray-400 font-medium tracking-wide font-sans">
-            Kelime anlamı yükleniyor...
-          </span>
-        </div>
-      );
-    }
-
-    const titleColorClass = themeColor === 'emerald' ? 'text-emerald-400' : 'text-rose-400';
-    const borderColorClass = themeColor === 'emerald' ? 'border-emerald-500/15' : 'border-rose-500/15';
-
-    return (
-      <div className={`w-full max-w-sm mx-auto p-4 bg-black/25 rounded-2xl border ${borderColorClass} text-left space-y-1.5 transition-all duration-300 shadow-md my-2`}>
-        <div className="flex items-center justify-between">
-          <span className={`text-[10px] font-black uppercase tracking-wider ${titleColorClass} font-mono flex items-center gap-1`}>
-            📖 KELİME ANLAMI
-          </span>
-          <a
-            href={`https://www.google.com/search?q=${encodeURIComponent(turkishLower(targetWord) + ' ne demek')}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[10px] font-bold text-amber-400 hover:underline flex items-center gap-0.5"
-          >
-            Google'da Ara ↗
-          </a>
-        </div>
-        <p className="text-[11px] text-gray-300 italic font-serif leading-relaxed">
-          "{wordDefinition}"
-        </p>
-      </div>
-    );
-  };
 
   // Handle Game Loss
   const handleGameLoss = async (reason: string = 'Hakkınız Bitti') => {
@@ -2809,11 +2688,6 @@ export default function App() {
     showToast(`Oyunu Kaybettiniz: ${reason}! Doğru Kelime: ${targetWord}`, 'error');
     playDefeatSound(settings.soundEnabled);
     
-    // Fetch definition for targetWord so the user can learn its meaning even on loss!
-    if (targetWord) {
-      fetchTargetWordDefinition(targetWord);
-    }
-
     if (isDailyPuzzle) {
       const { dateStr } = getDailyWordAndLength();
       safeLocalStorage.setItem('kelimesavasi_daily_completed_date', dateStr);
@@ -3062,13 +2936,24 @@ export default function App() {
       if (activeMatch) {
         const matchId = activeMatch.matchId || activeMatch.id;
         if (matchId) {
+          const currentAuthUid = auth.currentUser?.uid || profile.id;
           const matchRef = doc(db, 'matches', matchId);
           const roomRef = doc(db, 'rooms', matchId);
-          const playerUpdate = {
-            [`players.${profile.id}.attempts`]: updatedAttempts,
-            [`players.${profile.id}.completed`]: (hasWon || updatedAttempts.length >= 6),
-            [`players.${profile.id}.won`]: hasWon
+          const playerUpdate: any = {
+            [`players.${currentAuthUid}.attempts`]: updatedAttempts,
+            [`players.${currentAuthUid}.attemptsCount`]: updatedAttempts.length,
+            [`players.${currentAuthUid}.completed`]: (hasWon || updatedAttempts.length >= 6),
+            [`players.${currentAuthUid}.won`]: hasWon,
+            [`attempts.${currentAuthUid}`]: updatedAttempts,
+            updatedAt: new Date().toISOString()
           };
+          if (profile.id && profile.id !== currentAuthUid) {
+            playerUpdate[`players.${profile.id}.attempts`] = updatedAttempts;
+            playerUpdate[`players.${profile.id}.attemptsCount`] = updatedAttempts.length;
+            playerUpdate[`players.${profile.id}.completed`] = (hasWon || updatedAttempts.length >= 6);
+            playerUpdate[`players.${profile.id}.won`] = hasWon;
+            playerUpdate[`attempts.${profile.id}`] = updatedAttempts;
+          }
           setDoc(matchRef, playerUpdate, { merge: true }).catch(err => console.warn('Non-blocking Firestore update error:', err));
           setDoc(roomRef, playerUpdate, { merge: true }).catch(() => {});
         }
@@ -3175,11 +3060,6 @@ export default function App() {
           }
           
           setShowCongratsModal(true);
-          if (targetWord) {
-            fetchTargetWordDefinition(targetWord);
-          } else {
-            setWordDefinition(definition || 'Kelime başarılı bir şekilde çözüldü.');
-          }
           if (isDailyPuzzle) {
             showToast(`☀️ GÜNLÜK BULMACA TAMAMLANDI! +${scoreAwarded} Puan & 'Günlük Bilge' Rozeti!`, 'success');
           } else {
@@ -3993,7 +3873,6 @@ export default function App() {
       setRevealedHints({});
       setActiveWordSuggestion(null);
       setSecondsLeft(20);
-      setWordDefinition('');
       setLetterStatuses({});
       setActiveMatch(null);
 
@@ -4122,14 +4001,6 @@ export default function App() {
       // Force set isMatchEndedRef.current to true so keyboard listener ignores any events
       isMatchEndedRef.current = true;
 
-      // Ensure word definition is fetched for match end card (non-blocking)
-      const wordToUse = targetWord || activeMatch.targetWord || activeMatch.correctWord || '';
-      if (wordToUse) {
-        try {
-          void fetchTargetWordDefinition(wordToUse).catch(() => {});
-        } catch (e) {}
-      }
-
       if (typeof window !== 'undefined' && (window as any).AndroidBridge) {
         try {
           if ((window as any).AndroidBridge.loadAdBackground) {
@@ -4243,6 +4114,7 @@ export default function App() {
             darkMode={darkMode}
             onToggleDarkMode={() => setDarkMode(!darkMode)}
             isOnline={isOnline}
+            lobbyPlayers={lobbyPlayers}
             onReconnect={handleManualReconnect}
             onStartDailyPuzzle={handleStartDailyPuzzle}
             isDailyPuzzleCompletedToday={isDailyPuzzleCompletedToday}
@@ -4390,7 +4262,14 @@ export default function App() {
             const selfKey = selfPlayer?.id || selfPlayer?.uid || selfId;
 
             const selfState = activeMatch.players?.[selfKey] || activeMatch.players?.[profile.id] || activeMatch.players?.[selfId] || {};
-            const oppState = activeMatch.players?.[oppId] || {};
+            const oppKeys = [oppPlayer?.id, oppPlayer?.uid, oppPlayer?.profileId, oppId, 'p2', 'p1'].filter(Boolean);
+            let oppState: any = {};
+            for (const k of oppKeys) {
+              if (activeMatch.players?.[k] && Object.keys(activeMatch.players[k]).length > 0) {
+                oppState = activeMatch.players[k];
+                break;
+              }
+            }
 
             let oppDisplayName = oppPlayer?.name || oppPlayer?.username || oppPlayer?.displayName || '';
             if (!oppDisplayName || oppDisplayName === 'Oyuncu 1' || oppDisplayName === 'Oyuncu 2' || oppDisplayName === 'Oyuncu') {
@@ -4398,8 +4277,21 @@ export default function App() {
             }
 
             const selfAttemptCount = attempts.length;
-            const oppAttempts = activeMatch.attempts?.[oppId] || oppState.attempts || [];
-            const oppAttemptCount = Array.isArray(oppAttempts) ? oppAttempts.length : 0;
+            let oppAttempts: any[] = [];
+            let oppAttemptCount = 0;
+            for (const k of oppKeys) {
+              const atts = activeMatch.attempts?.[k] || activeMatch.players?.[k]?.attempts;
+              if (Array.isArray(atts) && atts.length > oppAttempts.length) {
+                oppAttempts = atts;
+              }
+              const count = activeMatch.players?.[k]?.attemptsCount || (Array.isArray(atts) ? atts.length : 0);
+              if (count > oppAttemptCount) {
+                oppAttemptCount = count;
+              }
+            }
+            if (oppAttempts.length > oppAttemptCount) {
+              oppAttemptCount = oppAttempts.length;
+            }
 
             const selfScore = selfState.score ?? activeMatch.scores?.[selfKey] ?? activeMatch.scores?.[profile.id] ?? 0;
             const oppScore = oppState.score ?? activeMatch.scores?.[oppId] ?? 0;
@@ -4670,7 +4562,9 @@ export default function App() {
               </div>
               <button
                 onClick={() => {
-                  setCurrentAttempt(activeWordSuggestion.slice(0, wordLength));
+                  if (activeWordSuggestion && activeWordSuggestion.length === wordLength) {
+                    setCurrentAttempt(activeWordSuggestion);
+                  }
                   playClickSound(settings.soundEnabled);
                 }}
                 className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition active:scale-95 cursor-pointer shadow-md"
@@ -4747,17 +4641,6 @@ export default function App() {
                 <h4 className="text-xs font-bold text-gray-900 dark:text-white">Aradığınız kelime şuydu:</h4>
                 <div className="flex items-center justify-center gap-1.5">
                   <strong className="text-xl text-rose-500 tracking-wider font-extrabold uppercase leading-none">{targetWord}</strong>
-                  <button
-                    onClick={() => {
-                      setShowDefinitionModal(true);
-                      playClickSound(settings.soundEnabled);
-                    }}
-                    className="p-1 rounded-full text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition active:scale-95 cursor-pointer flex items-center justify-center"
-                    title="Kelime Anlamı"
-                    id="info-definition-btn-loss"
-                  >
-                    <Info size={16} className="stroke-[2.5]" />
-                  </button>
                 </div>
               </div>
 
@@ -4813,13 +4696,6 @@ export default function App() {
               <div className="p-3 bg-black/20 rounded-xl border border-white/5 space-y-1 text-white">
                 <span className="text-[9px] text-gray-400 uppercase font-mono tracking-widest block">GÜNÜN KELİMESİ</span>
                 <strong className="text-xl text-amber-500 tracking-widest font-black uppercase block leading-none">{targetWord}</strong>
-                {wordDefinition && wordDefinition !== 'loading' ? (
-                  <p className="text-[11px] text-gray-300 italic font-serif leading-relaxed line-clamp-3 mt-1.5">
-                    "{wordDefinition}"
-                  </p>
-                ) : wordDefinition === 'loading' ? (
-                  <p className="text-[10px] text-gray-400 italic animate-pulse mt-1.5">Anlamı yükleniyor...</p>
-                ) : null}
               </div>
 
               <button
@@ -4961,7 +4837,7 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Word Definition Section inside Results Card */}
+                    {/* Target Word Display Section inside Results Card */}
                     <div className="bg-black/30 border border-white/5 rounded-2xl p-3 my-2 text-left shrink-0">
                       <div className="flex items-center justify-between">
                         <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider font-mono">ARANAN SÖZCÜK</span>
@@ -4969,24 +4845,7 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-1.5 my-0.5">
                         <strong className="text-xl font-black tracking-widest text-[#FAF6E9] uppercase leading-none">{targetWord}</strong>
-                        <button
-                          onClick={() => {
-                            setShowDefinitionModal(true);
-                            playClickSound(settings.soundEnabled);
-                          }}
-                          className="p-1 rounded-full text-amber-400 hover:bg-amber-400/10 transition active:scale-95"
-                          title="Anlamını Gör"
-                        >
-                          <Info size={14} className="stroke-[2.5]" />
-                        </button>
                       </div>
-                      {wordDefinition && wordDefinition !== 'loading' ? (
-                        <p className="text-[10px] text-gray-300 italic font-serif leading-relaxed line-clamp-2">
-                          "{wordDefinition}"
-                        </p>
-                      ) : wordDefinition === 'loading' ? (
-                        <p className="text-[10px] text-gray-400 italic animate-pulse">Sözlük anlamı yükleniyor...</p>
-                      ) : null}
                     </div>
 
                     {/* Player Round Statistics */}
@@ -5011,23 +4870,27 @@ export default function App() {
                             displayName = p.name || p.username || p.displayName || 'Rakip';
                           }
 
-                          // Determine attempts
+                          // Determine attempts and attemptCount
+                          const candKeys = [pId, p.id, p.uid, p.profileId, (index === 0 ? 'p1' : 'p2')].filter(Boolean);
                           let pAttempts: any[] = [];
-                          if (isSelf) {
-                            pAttempts = attempts.length > 0 
-                              ? attempts 
-                              : (activeMatch.attempts?.[profile.id] || activeMatch.players?.[profile.id]?.attempts || []);
-                          } else {
-                            pAttempts = activeMatch.attempts?.[pId] || 
-                                        activeMatch.players?.[pId]?.attempts || 
-                                        activeMatch.attempts?.['p2'] || 
-                                        activeMatch.attempts?.['p1'] || 
-                                        activeMatch.players?.['p1']?.attempts || 
-                                        activeMatch.players?.['p2']?.attempts || 
-                                        activeMatch.opponentAttempts || [];
+                          let pAttemptsCount = 0;
+
+                          for (const k of candKeys) {
+                            const atts = activeMatch.attempts?.[k] || activeMatch.players?.[k]?.attempts;
+                            if (Array.isArray(atts) && atts.length > pAttempts.length) {
+                              pAttempts = atts;
+                            }
+                            const cnt = activeMatch.players?.[k]?.attemptsCount || (Array.isArray(atts) ? atts.length : 0);
+                            if (cnt > pAttemptsCount) {
+                              pAttemptsCount = cnt;
+                            }
                           }
 
-                          const attemptCount = pAttempts.length;
+                          if (isSelf && attempts.length > pAttempts.length) {
+                            pAttempts = attempts;
+                          }
+
+                          const attemptCount = Math.max(pAttempts.length, pAttemptsCount);
 
                           // Determine win status
                           let isWonPlayer = false;
@@ -5099,8 +4962,8 @@ export default function App() {
 
       {/* Name/Profile Editing Modal */}
       {isEditingName && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md border border-gray-100 dark:border-gray-800 shadow-2xl space-y-5 overflow-y-auto max-h-[90vh]" id="edit-profile-modal">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#161D2B] text-white rounded-2xl p-6 w-full max-w-md border border-amber-500/20 shadow-2xl space-y-5 overflow-y-auto max-h-[90vh]" id="edit-profile-modal">
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-lg font-bold text-gray-900 dark:text-white">Profilini Düzenle</h3>
@@ -5286,97 +5149,12 @@ export default function App() {
         />
       )}
 
-      {/* Word Definition Modal */}
-      {showDefinitionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fadeIn" id="definition-modal-container">
-          {/* Backdrop */}
-          <div 
-            className="absolute inset-0 bg-gray-900/60 dark:bg-black/75 backdrop-blur-sm transition-opacity duration-200"
-            onClick={() => setShowDefinitionModal(false)}
-          />
-          
-          {/* Modal Container */}
-          <div className="bg-[#2E3748] border border-[#3E485A] rounded-[2.5rem] p-6 max-w-sm w-full shadow-2xl relative z-10 overflow-hidden text-white animate-scale-up" id="definition-modal-card">
-            {/* Atmospheric light glows */}
-            <div className="absolute -top-24 -left-24 w-48 h-48 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
-            
-            {/* Close Button in Upper-Right */}
-            <button
-              onClick={() => {
-                setShowDefinitionModal(false);
-                playClickSound(settings.soundEnabled);
-              }}
-              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition duration-200 cursor-pointer"
-              id="close-definition-modal-button"
-            >
-              <X size={18} />
-            </button>
-
-            {/* Content */}
-            <div className="relative z-10 text-left space-y-4">
-              <div className="flex items-center gap-2 border-b border-[#3E485A] pb-3 mr-6">
-                <span className="text-xs font-extrabold uppercase tracking-wider text-amber-400 font-mono flex items-center gap-1">
-                  📖 SÖZLÜK ANLAMI
-                </span>
-              </div>
-
-              <div className="p-3 bg-black/20 rounded-2xl border border-[#3E485A]/50 text-center">
-                <span className="text-[10px] text-gray-400 uppercase tracking-wider font-mono block mb-1">
-                  Aranan Kelime
-                </span>
-                <strong className="text-lg font-black tracking-widest uppercase text-[#FAF6E9]">{targetWord}</strong>
-              </div>
-
-              {wordDefinition === 'loading' ? (
-                <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
-                  <div className="w-6 h-6 rounded-full border-2 border-amber-500 border-t-transparent animate-spin" />
-                  <span className="text-xs text-gray-400 font-medium tracking-wide">
-                    Anlamı yükleniyor...
-                  </span>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-sm text-gray-200 italic font-serif leading-relaxed px-1">
-                    "{wordDefinition || 'Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.'}"
-                  </p>
-                  
-                  {/* If there was an error, show a retry button */}
-                  {Boolean(wordDefinition && typeof wordDefinition === 'string' && (wordDefinition.includes('hata') || wordDefinition.includes('yüklenemedi') || wordDefinition.includes('bağlantı') || wordDefinition.includes('ulaşılamıyor') || wordDefinition.includes('bulunamadı'))) && (
-                    <button
-                      onClick={() => {
-                        playClickSound(settings.soundEnabled);
-                        fetchTargetWordDefinition(targetWord, true);
-                      }}
-                      className="w-full mt-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 py-2 px-4 rounded-xl text-xs font-bold transition duration-200 cursor-pointer flex items-center justify-center gap-1.5"
-                    >
-                      <RotateCcw size={12} />
-                      <span>Tekrar Yüklemeyi Dene</span>
-                    </button>
-                  )}
-                  
-                  <div className="pt-2 border-t border-[#3E485A]/30 flex justify-end">
-                    <a
-                      href={`https://www.google.com/search?q=${encodeURIComponent(turkishLower(targetWord) + ' ne demek')}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs font-bold text-amber-400 hover:underline flex items-center gap-0.5 cursor-pointer"
-                    >
-                      Google'da Ara ↗
-                    </a>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Congrats / Victory Modal */}
       {showCongratsModal && !activeMatch && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fadeIn" id="congrats-modal-container">
           {/* Backdrop */}
           <div 
-            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity duration-200 cursor-pointer"
+            className="absolute inset-0 bg-black/80 backdrop-blur-md transition-opacity duration-200 cursor-pointer"
             onClick={() => {
               playClickSound(settings.soundEnabled);
               startNewGame(wordLength);
@@ -5385,7 +5163,7 @@ export default function App() {
           />
           
           {/* Modal Container */}
-          <div className="bg-[#2E3748] border-2 border-emerald-500/30 rounded-[2.5rem] p-6 max-w-sm w-full shadow-2xl relative z-10 overflow-hidden text-white animate-scale-up text-center space-y-4" id="congrats-modal-card">
+          <div className="bg-[#161D2B] border-2 border-emerald-500/30 rounded-[2.5rem] p-6 max-w-sm w-full shadow-2xl relative z-10 overflow-hidden text-white animate-scale-up text-center space-y-4" id="congrats-modal-card">
             {/* Soft decorative glow */}
             <div className="absolute -top-24 -left-24 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
             
@@ -5401,15 +5179,6 @@ export default function App() {
             <div className="p-3.5 bg-black/30 rounded-2xl border border-white/5 space-y-1 text-center relative z-10">
               <span className="text-[9px] text-gray-400 uppercase font-mono tracking-widest block">BULUNAN KELİME</span>
               <strong className="text-2xl font-black tracking-widest text-[#FAF6E9] uppercase block leading-none">{targetWord}</strong>
-              
-              {/* Word Definition */}
-              {wordDefinition && wordDefinition !== 'loading' ? (
-                <p className="text-[11px] text-gray-300 italic font-serif leading-relaxed line-clamp-3 mt-1.5">
-                  "{wordDefinition}"
-                </p>
-              ) : wordDefinition === 'loading' ? (
-                <p className="text-[10px] text-gray-400 italic animate-pulse mt-1.5">Anlamı yükleniyor...</p>
-              ) : null}
             </div>
 
             {/* Action buttons matching the loss restart button but themed in emerald */}
@@ -5516,12 +5285,12 @@ export default function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fadeIn">
           {/* Backdrop */}
           <div 
-            className="absolute inset-0 bg-gray-900/60 dark:bg-black/75 backdrop-blur-sm transition-opacity duration-200"
+            className="absolute inset-0 bg-black/80 backdrop-blur-md transition-opacity duration-200"
             onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
           />
           
           {/* Modal Container */}
-          <div className="bg-white dark:bg-gray-900 border border-gray-150 dark:border-gray-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative z-10 overflow-hidden">
+          <div className="bg-[#161D2B] border border-amber-500/25 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative z-10 overflow-hidden text-white">
             {/* Atmospheric light glows */}
             <div className="absolute -top-12 -right-12 w-32 h-32 bg-amber-500/10 dark:bg-amber-500/5 rounded-full blur-2xl pointer-events-none" />
             <div className="absolute -bottom-12 -right-12 w-32 h-32 bg-emerald-500/10 dark:bg-emerald-500/5 rounded-full blur-2xl pointer-events-none" />

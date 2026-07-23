@@ -61,7 +61,7 @@ interface SettingsModalProps {
   onReconnect?: () => void;
 }
 
-type TabType = 'account' | 'appearance' | 'preferences' | 'network';
+type TabType = 'account' | 'appearance' | 'preferences';
 
 export default function SettingsModal({
   settings,
@@ -361,18 +361,18 @@ export default function SettingsModal({
   const isNotificationOn = settings.notificationEnabled !== false;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="card-theme rounded-[2.2rem] w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-all duration-300" id="app-settings-modal">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="card-theme bg-[#161D2B] border border-amber-500/20 rounded-[2.2rem] w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-all duration-300 text-white" id="app-settings-modal">
         
         {/* Header (Sticky) */}
-        <div className="flex-none flex justify-between items-center px-6 pt-6 pb-4 border-b border-theme">
+        <div className="flex-none flex justify-between items-center px-6 pt-6 pb-4 border-b border-white/10 bg-[#161D2B]">
           <div className="flex items-center gap-2.5">
             <div className="p-2.5 bg-amber-500 text-slate-950 rounded-xl shadow-md shadow-amber-500/20">
               <Sliders size={18} />
             </div>
             <div className="text-left">
-              <h3 className="text-base font-black text-theme-primary tracking-wide">Ayarlar</h3>
-              <p className="text-[11px] text-theme-muted font-medium">Savaş alanını ve profilinizi özelleştirin</p>
+              <h3 className="text-base font-black text-amber-300 tracking-wide">Ayarlar</h3>
+              <p className="text-[11px] text-gray-300 font-medium">Savaş alanını ve profilinizi özelleştirin</p>
             </div>
           </div>
           <button
@@ -381,14 +381,14 @@ export default function SettingsModal({
                 onClose();
               }
             }}
-            className="p-1.5 rounded-xl text-theme-muted hover:text-theme-primary hover:bg-white/5 transition cursor-pointer"
+            className="p-1.5 rounded-xl text-gray-300 hover:text-white hover:bg-white/10 transition cursor-pointer"
           >
             <X size={18} />
           </button>
         </div>
 
         {/* Tab Navigation (Sticky) */}
-        <div className="flex-none bg-black/10 dark:bg-[#171E35] border-b border-theme px-4 py-1.5 flex gap-1">
+        <div className="flex-none bg-[#101520] border-b border-white/10 px-4 py-1.5 flex gap-1">
           <button
             onClick={() => setActiveTab('account')}
             className={`flex-1 py-2 px-1 text-xs font-black rounded-lg transition-all flex items-center justify-center gap-1.5 ${
@@ -424,18 +424,6 @@ export default function SettingsModal({
             <Sliders size={14} />
             <span className="hidden sm:inline">Tercihler</span>
             <span className="sm:hidden text-[10px]">Tercih</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('network')}
-            className={`flex-1 py-2 px-1 text-xs font-black rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              activeTab === 'network'
-                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
-            }`}
-          >
-            <Wifi size={14} />
-            <span className="hidden sm:inline">Bağlantı</span>
-            <span className="sm:hidden text-[10px]">Log</span>
           </button>
         </div>
 
@@ -1217,114 +1205,7 @@ export default function SettingsModal({
             </div>
           )}
 
-          {activeTab === 'network' && (
-            <div className="space-y-4 text-left">
-              <div className="inner-theme border border-theme rounded-2xl p-4.5 space-y-3.5 text-left shadow-md">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-theme pb-3">
-                  <div>
-                    <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-                      <Wifi size={14} className="text-amber-400" />
-                      Soket Bağlantı Durumu & Günlükleri
-                    </h4>
-                    <p className="text-[10px] text-slate-300/80 leading-normal mt-1">
-                      Canlı düello bağlantınızı ve WebSocket durumunu izleyin.
-                    </p>
-                  </div>
-                  {onReconnect && (
-                    <button
-                      type="button"
-                      onClick={onReconnect}
-                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl shadow transition duration-200 active:scale-[0.98] flex items-center gap-1.5 cursor-pointer self-start sm:self-center"
-                    >
-                      <Wifi size={13} />
-                      <span>Yeniden Bağlan</span>
-                    </button>
-                  )}
-                </div>
 
-                {networkLogs.length === 0 ? (
-                  <div className="py-8 text-center text-slate-400 text-xs">
-                    Henüz herhangi bir ağ olayı kaydedilmedi.
-                  </div>
-                ) : (
-                  <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                    {networkLogs.map((log, index) => {
-                      let typeColor = 'text-blue-400';
-                      let typeLabel = 'INFO';
-                      if (log.type === 'error') {
-                        typeColor = 'text-rose-400';
-                        typeLabel = 'HATA';
-                      } else if (log.type === 'success') {
-                        typeColor = 'text-emerald-400';
-                        typeLabel = 'BAŞARILI';
-                      } else if (log.type === 'sent') {
-                        typeColor = 'text-amber-400';
-                        typeLabel = 'GİDEN';
-                      } else if (log.type === 'received') {
-                        typeColor = 'text-purple-400';
-                        typeLabel = 'GELEN';
-                      }
-
-                      return (
-                        <div
-                          key={index}
-                          className="flex items-start gap-2.5 text-xs font-mono p-2.5 rounded-xl bg-black/20 dark:bg-black/45 border border-white/5"
-                        >
-                          <span className="text-slate-500 text-[10px] select-none pt-0.5">
-                            [{log.timestamp}]
-                          </span>
-                          <span className={`font-black tracking-wide text-[10px] ${typeColor} uppercase select-none min-w-[50px] inline-block`}>
-                            {typeLabel}
-                          </span>
-                          <span className="text-gray-300 flex-1 break-all select-text">
-                            {log.message}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Card 2: Veritabanı Temizliği (Purge Admin) */}
-              <div className="inner-theme border border-theme rounded-2xl p-4.5 space-y-3 text-left shadow-md mt-4">
-                <h4 className="text-xs font-bold text-rose-400 uppercase tracking-wider flex items-center gap-2">
-                  <AlertTriangle size={14} className="animate-pulse" />
-                  Veritabanı Temizliği ve Senkronizasyonu (Geliştirici)
-                </h4>
-                <p className="text-[10px] text-slate-300/80 leading-normal">
-                  Firestore <code className="px-1 py-0.5 rounded bg-black/30 font-mono text-rose-300">users</code> koleksiyonundaki tüm eski, hayalet ve kalıntı kullanıcı profili dokümanlarını tamamen silerek veritabanını sıfırlayabilirsiniz. Kendi oyuncu profiliniz korunacak, arkadaş listeniz temizlenecektir.
-                </p>
-                
-                {clearDbMessage && (
-                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 text-[11px] font-medium leading-relaxed">
-                    {clearDbMessage}
-                  </div>
-                )}
-                
-                {clearDbError && (
-                  <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-[11px] font-medium leading-relaxed">
-                    {clearDbError}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  disabled={isClearingDb}
-                  onClick={handlePurgeUsersDatabase}
-                  className="w-full mt-1.5 py-3 px-4 rounded-xl border border-rose-500/30 bg-rose-500/5 hover:bg-rose-500/10 disabled:opacity-50 text-rose-400 text-xs font-black transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  {isClearingDb ? (
-                    <div className="w-4 h-4 border-2 border-rose-500/30 border-t-rose-400 rounded-full animate-spin" />
-                  ) : (
-                    <AlertTriangle size={14} />
-                  )}
-                  <span>{isClearingDb ? 'Temizleniyor...' : 'Eski/Hayalet Oyuncuları Temizle'}</span>
-                </button>
-              </div>
-
-            </div>
-          )}
 
           {/* Privacy Policy Modal */}
           <PrivacyPolicyModal isOpen={isPrivacyOpen} onClose={() => setIsPrivacyOpen(false)} />

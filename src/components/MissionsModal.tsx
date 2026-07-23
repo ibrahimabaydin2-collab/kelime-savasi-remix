@@ -51,9 +51,9 @@ export default function MissionsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" id="missions-modal-backdrop">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4" id="missions-modal-backdrop">
       <div 
-        className="card-theme border border-[#3E485A]/30 rounded-[2.2rem] w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-colors duration-200 relative"
+        className="card-theme bg-[#161D2B] border border-amber-500/20 rounded-[2.2rem] w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-colors duration-200 relative text-white"
         id="missions-modal-card"
       >
         {/* Glowing star */}
@@ -64,7 +64,7 @@ export default function MissionsModal({
         </div>
 
         {/* Header */}
-        <div className="p-5 border-b border-[#3E485A] flex justify-between items-center bg-[#3D4756]/45">
+        <div className="p-5 border-b border-white/10 flex justify-between items-center bg-[#161D2B]">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-amber-500 text-slate-950 rounded-xl shadow-md shadow-amber-500/20">
               <Target size={22} className="animate-pulse" />

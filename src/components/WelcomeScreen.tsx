@@ -29,6 +29,7 @@ interface WelcomeScreenProps {
   onOpenSettings: () => void;
   onOpenMissions?: () => void;
   isOnline: boolean;
+  lobbyPlayers?: { id: string; name: string; avatarUrl?: string }[];
   
   // New Header integration props
   onOpenStats?: () => void;
@@ -63,6 +64,7 @@ export default function WelcomeScreen({
   onOpenSettings,
   onOpenMissions,
   isOnline,
+  lobbyPlayers = [],
   onReconnect,
   onOpenStats,
   darkMode,
@@ -114,8 +116,8 @@ export default function WelcomeScreen({
   };
 
   // Real-time bidirectional friends and requests from Firestore
-  const [confirmedFriends, setConfirmedFriends] = useState<{ id: string; name: string; avatarUrl?: string }[]>([]);
-  const [incomingRequests, setIncomingRequests] = useState<{ id: string; name: string; avatarUrl?: string }[]>([]);
+  const [confirmedFriends, setConfirmedFriends] = useState<{ id: string; name: string; avatarUrl?: string; isOnline?: boolean; lastSeen?: number }[]>([]);
+  const [incomingRequests, setIncomingRequests] = useState<{ id: string; name: string; avatarUrl?: string; isOnline?: boolean; lastSeen?: number }[]>([]);
   const [loadingFriends, setLoadingFriends] = useState<boolean>(false);
 
   // Search states for "Oyuncu Bul"
@@ -215,8 +217,10 @@ export default function WelcomeScreen({
         const p = usersWhoAddedMe.find(u => u.id === id);
         return {
           id,
-          name: p?.name || 'Bilinmeyen Oyuncu',
-          avatarUrl: p?.avatarUrl
+          name: p?.name || (p as any)?.username || (p as any)?.displayName || 'Bilinmeyen Oyuncu',
+          avatarUrl: p?.avatarUrl,
+          isOnline: (p as any)?.isOnline ?? false,
+          lastSeen: (p as any)?.lastSeen || ((p as any)?.lastActive ? new Date((p as any).lastActive).getTime() : undefined)
         };
       });
 
@@ -226,8 +230,10 @@ export default function WelcomeScreen({
         const p = usersWhoAddedMe.find(u => u.id === id);
         return {
           id,
-          name: p?.name || 'Bilinmeyen Oyuncu',
-          avatarUrl: p?.avatarUrl
+          name: p?.name || (p as any)?.username || (p as any)?.displayName || 'Bilinmeyen Oyuncu',
+          avatarUrl: p?.avatarUrl,
+          isOnline: (p as any)?.isOnline ?? false,
+          lastSeen: (p as any)?.lastSeen || ((p as any)?.lastActive ? new Date((p as any).lastActive).getTime() : undefined)
         };
       });
 
@@ -259,6 +265,21 @@ export default function WelcomeScreen({
       setSearching(false);
     }
   };
+
+  // Debounced real-time player search when typing in the 'Oyuncu Bul' tab
+  useEffect(() => {
+    if (friendsTab !== 'find') return;
+    const term = friendsSearchTerm.trim();
+    if (!term) {
+      setSearchedPlayers([]);
+      setSearchHasRun(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      handleSearchPlayers();
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [friendsSearchTerm, friendsTab]);
 
   const onRewardRef = useRef(onWatchRewardedAdReward);
   useEffect(() => {
@@ -401,6 +422,7 @@ export default function WelcomeScreen({
     }
   };
 
+  const friendsKey = (profile.friends || []).join(',');
   useEffect(() => {
     if (showFriendsModal) {
       refreshFriendsList();
@@ -408,8 +430,15 @@ export default function WelcomeScreen({
       setFriendsSearchTerm('');
       setSearchedPlayers([]);
       setSearchHasRun(false);
+
+      // Periodically refresh friends list to keep online status updated live
+      const interval = setInterval(() => {
+        refreshFriendsList();
+      }, 10000);
+
+      return () => clearInterval(interval);
     }
-  }, [showFriendsModal, profile.friends]);
+  }, [showFriendsModal, friendsKey]);
 
   // Profile Inline Editor State
   const [isEditing, setIsEditing] = useState<boolean>(false);
@@ -421,13 +450,15 @@ export default function WelcomeScreen({
   const error = (isTouched || editName !== profile.name ? validateUsername(editName, [], profile.id) : null) || dbUsernameError;
 
   React.useEffect(() => {
-    if (profile.name) {
-      setEditName((prev) => (prev === profile.name ? prev : profile.name));
+    if (!isEditing) {
+      if (profile.name && profile.name !== editName) {
+        setEditName(profile.name);
+      }
+      if (profile.avatarUrl && profile.avatarUrl !== selectedAvatar) {
+        setSelectedAvatar(profile.avatarUrl);
+      }
     }
-    if (profile.avatarUrl) {
-      setSelectedAvatar((prev) => (prev === profile.avatarUrl ? prev : profile.avatarUrl));
-    }
-  }, [profile.name, profile.avatarUrl]);
+  }, [profile.name, profile.avatarUrl, isEditing]);
 
   const AVATAR_PRESETS = ['⚔️', '🧠', '🐺', '🦁', '🧙‍♂️', '🦊', '👾', '🦄', '⚡', '👑', '🎯', '🚀', '🔥', '🐉', '🐼', '🛡️', '🏆', '🦉'];
 
@@ -519,15 +550,33 @@ export default function WelcomeScreen({
     };
   };
 
+  // Helper to determine real-time friend online status
+  const isFriendOnline = (friend: { id: string; isOnline?: boolean; lastSeen?: number }) => {
+    // 1. Check WebSocket active lobby players
+    if (lobbyPlayers && lobbyPlayers.length > 0) {
+      const found = lobbyPlayers.some(lp => lp.id === friend.id || String(lp.id) === String(friend.id));
+      if (found) return true;
+    }
+    // 2. Check Firestore presence flag or last active timestamp within 3 minutes
+    if (friend.isOnline === true) return true;
+    if (friend.lastSeen && (Date.now() - Number(friend.lastSeen)) < 180000) return true;
+    return false;
+  };
+
   // Get all friends with status
   const friendsWithStatus = confirmedFriends.map(friend => {
+    const online = isFriendOnline(friend);
     return {
       ...friend,
-      isOnline: false,
-      status: 'offline',
+      isOnline: online,
+      status: online ? 'online' : 'offline',
       avatarUrl: friend.avatarUrl
     };
-  }).sort((a, b) => a.name.localeCompare(b.name, 'tr-TR'));
+  }).sort((a, b) => {
+    if (a.isOnline && !b.isOnline) return -1;
+    if (!a.isOnline && b.isOnline) return 1;
+    return a.name.localeCompare(b.name, 'tr-TR');
+  });
 
   const winRate = profile.stats && profile.stats.gamesPlayed > 0 
     ? Math.round((profile.stats.gamesWon / profile.stats.gamesPlayed) * 100) 
@@ -1275,42 +1324,42 @@ export default function WelcomeScreen({
         )}
       </div>
 
-      {/* Beautiful Cream Action Grid */}
+      {/* Solid Dark Action Grid */}
       <div className="grid grid-cols-4 gap-2.5 w-full relative z-10" id="bottom-buttons-grid">
         {/* Button 1: REKABET */}
         <button
           onClick={onOpenStats}
-          className="bg-[#FAF6E9] hover:bg-[#F3EFE0] active:scale-[0.97] text-[#2E3748] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-[0_4px_0_#D9D4C3,0_4px_8px_rgba(0,0,0,0.15)] border border-[#EBE6D5] transition duration-150 cursor-pointer"
+          className="bg-[#131A26] hover:bg-[#1A2333] active:scale-[0.97] text-[#FAF6E9] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-lg border border-amber-500/25 transition duration-150 cursor-pointer"
         >
-          <Trophy size={20} className="text-[#2E3748] stroke-[2.5]" />
-          <span className="text-[9px] font-black uppercase tracking-wider">REKABET</span>
+          <Trophy size={20} className="text-amber-400 stroke-[2.5]" />
+          <span className="text-[9px] font-black uppercase tracking-wider text-amber-100">REKABET</span>
         </button>
 
         {/* Button 2: ARKADAŞLAR */}
         <button
           onClick={() => setShowFriendsModal(true)}
-          className="bg-[#FAF6E9] hover:bg-[#F3EFE0] active:scale-[0.97] text-[#2E3748] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-[0_4px_0_#D9D4C3,0_4px_8px_rgba(0,0,0,0.15)] border border-[#EBE6D5] transition duration-150 cursor-pointer relative"
+          className="bg-[#131A26] hover:bg-[#1A2333] active:scale-[0.97] text-[#FAF6E9] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-lg border border-amber-500/25 transition duration-150 cursor-pointer relative"
         >
-          <Users size={20} className="text-[#2E3748] stroke-[2.5]" />
-          <span className="text-[9px] font-black uppercase tracking-wider">ARKADAŞ</span>
+          <Users size={20} className="text-amber-400 stroke-[2.5]" />
+          <span className="text-[9px] font-black uppercase tracking-wider text-amber-100">ARKADAŞ</span>
         </button>
 
         {/* Button 3: AYARLAR */}
         <button
           onClick={onOpenSettings}
-          className="bg-[#FAF6E9] hover:bg-[#F3EFE0] active:scale-[0.97] text-[#2E3748] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-[0_4px_0_#D9D4C3,0_4px_8px_rgba(0,0,0,0.15)] border border-[#EBE6D5] transition duration-150 cursor-pointer"
+          className="bg-[#131A26] hover:bg-[#1A2333] active:scale-[0.97] text-[#FAF6E9] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-lg border border-amber-500/25 transition duration-150 cursor-pointer"
         >
-          <Sliders size={20} className="text-[#2E3748] stroke-[2.5]" />
-          <span className="text-[9px] font-black uppercase tracking-wider">AYARLAR</span>
+          <Sliders size={20} className="text-amber-400 stroke-[2.5]" />
+          <span className="text-[9px] font-black uppercase tracking-wider text-amber-100">AYARLAR</span>
         </button>
 
         {/* Button 4: KURALLAR */}
         <button
           onClick={() => setShowRulesModal(true)}
-          className="bg-[#FAF6E9] hover:bg-[#F3EFE0] active:scale-[0.97] text-[#2E3748] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-[0_4px_0_#D9D4C3,0_4px_8px_rgba(0,0,0,0.15)] border border-[#EBE6D5] transition duration-150 cursor-pointer"
+          className="bg-[#131A26] hover:bg-[#1A2333] active:scale-[0.97] text-[#FAF6E9] rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 shadow-lg border border-amber-500/25 transition duration-150 cursor-pointer"
         >
-          <HelpCircle size={18} className="stroke-[2.5]" />
-          <span className="text-[9px] font-black uppercase tracking-wider">KURALLAR</span>
+          <HelpCircle size={18} className="text-amber-400 stroke-[2.5]" />
+          <span className="text-[9px] font-black uppercase tracking-wider text-amber-100">KURALLAR</span>
         </button>
       </div>
 
@@ -1323,8 +1372,8 @@ export default function WelcomeScreen({
 
       {/* Rules Detail Popup Modal */}
       {showRulesModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="card-theme rounded-[2rem] p-6 w-full max-w-lg shadow-2xl space-y-4 animate-scale-up text-left relative overflow-hidden">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="card-theme bg-[#161D2B] border border-amber-500/20 rounded-[2rem] p-6 w-full max-w-lg shadow-2xl space-y-4 animate-scale-up text-left relative overflow-hidden text-white">
             {/* Glowing 4-point star accent in bottom right */}
             <div className="absolute bottom-6 right-8 text-amber-100/15 animate-pulse select-none pointer-events-none">
               <svg className="w-8 h-8" viewBox="0 0 24 24" fill="currentColor">
@@ -1474,8 +1523,8 @@ export default function WelcomeScreen({
 
       {/* Active Friends Modal (Aktif Arkadaşlar) */}
       {showFriendsModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="card-theme rounded-[2rem] p-6 w-full max-w-md shadow-2xl space-y-4 animate-scale-up text-left relative overflow-hidden">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="card-theme bg-[#161D2B] border border-amber-500/20 rounded-[2rem] p-6 w-full max-w-md shadow-2xl space-y-4 animate-scale-up text-left relative overflow-hidden text-white">
             {/* Glowing 4-point star accent in bottom right */}
             <div className="absolute bottom-6 right-8 text-amber-100/15 animate-pulse select-none pointer-events-none">
               <svg className="w-8 h-8" viewBox="0 0 24 24" fill="currentColor">

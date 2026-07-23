@@ -80,7 +80,7 @@ export default function PrivacyPolicyModal({ isOpen, onClose }: PrivacyPolicyMod
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="card-theme border border-white/10 rounded-[2.2rem] w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] bg-[#1a2035]/95 text-slate-100 transition-all duration-300">
+      <div className="card-theme border border-white/10 rounded-[2.2rem] w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] bg-[#161D2B] text-slate-100 transition-all duration-300">
         
         {/* Header */}
         <div className="flex-none px-6 py-5 border-b border-white/5 bg-black/20 flex items-center justify-between">

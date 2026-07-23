@@ -178,8 +178,8 @@ Sen de bana meydan oku! 🚀 ${shareLink}`;
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="card-theme border border-[#3E485A]/30 rounded-[2.2rem] w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-colors duration-200 relative">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="card-theme bg-[#161D2B] border border-amber-500/20 rounded-[2.2rem] w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-colors duration-200 relative text-white">
         {/* Glowing star */}
         <div className="absolute bottom-4 right-4 text-amber-100/10 animate-pulse select-none pointer-events-none">
           <svg className="w-8 h-8" viewBox="0 0 24 24" fill="currentColor">
@@ -188,26 +188,26 @@ Sen de bana meydan oku! 🚀 ${shareLink}`;
         </div>
 
         {/* Header */}
-        <div className="p-5 border-b border-[#3E485A] flex justify-between items-center bg-[#3D4756]/45">
+        <div className="p-5 border-b border-white/10 flex justify-between items-center bg-[#161D2B]">
           <h2 className="text-lg font-bold text-[#FAF6E9] flex items-center gap-2">
             <BarChart2 className="text-amber-400" size={20} />
             Kişisel Profil & İlerleme
           </h2>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition cursor-pointer"
+            className="p-1.5 rounded-lg text-gray-300 hover:text-white hover:bg-white/10 transition cursor-pointer"
           >
             <X size={18} />
           </button>
         </div>
 
         {/* Tab Controls */}
-        <div className="flex border-b border-[#3E485A] bg-[#3D4756]/20">
+        <div className="flex border-b border-white/10 bg-[#101520]">
           <button
             onClick={() => setActiveTab('stats')}
             className={`flex-1 py-3 text-sm font-semibold border-b-2 transition flex items-center justify-center gap-1.5 cursor-pointer ${
               activeTab === 'stats'
-                ? 'border-amber-400 text-amber-400 bg-[#3D4756]/40'
+                ? 'border-amber-400 text-amber-400 bg-[#161D2B]'
                 : 'border-transparent text-gray-400 hover:text-white hover:bg-[#3D4756]/10'
             }`}
           >

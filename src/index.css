@@ -1,5 +1,27 @@
 @import "tailwindcss";
 
+/* Solid Dark Matte Theme Classes for Modals and Cards */
+.card-theme {
+  background-color: #161D2B !important;
+  color: #FAF6E9 !important;
+  opacity: 1 !important;
+}
+
+.inner-theme {
+  background-color: #101520 !important;
+  color: #FAF6E9 !important;
+  opacity: 1 !important;
+}
+
+.bg-theme {
+  background-color: #1F2633 !important;
+  opacity: 1 !important;
+}
+
+.border-theme {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
 /* WebView & Native Interface Layout Rules */
 .android-hybrid #top-ad-placeholder,
 .android-hybrid #bottom-ad-placeholder {
@@ -14,3 +36,4 @@ html, body, #root {
   height: 100%;
   overflow-x: hidden;
 }
+

@@ -367,10 +367,7 @@ export function matchesSearchTerm(userName: string, searchTerm: string): boolean
   return (
     uName.includes(term) ||
     uNameTr.includes(termTr) ||
-    uNameClean.includes(termClean) ||
-    term.includes(uName) ||
-    termTr.includes(uNameTr) ||
-    termClean.includes(uNameClean)
+    uNameClean.includes(termClean)
   );
 }
 
@@ -383,8 +380,9 @@ export async function saveUserProfileToFirestore(profile: UserProfile): Promise<
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
         window.localStorage.setItem('kelimesavasi_profile', JSON.stringify(profile));
-        if (profile.name) {
-          window.localStorage.setItem('saved_username', profile.name.trim());
+        const resolvedName = profile.name || (profile as any).username || (profile as any).displayName;
+        if (resolvedName) {
+          window.localStorage.setItem('saved_username', resolvedName.trim());
         }
       }
     } catch (lsErr) {
@@ -398,7 +396,7 @@ export async function saveUserProfileToFirestore(profile: UserProfile): Promise<
 
     const userDocRef = doc(db, 'users', profile.id);
     
-    const cleanName = profile.name ? profile.name.trim() : '';
+    const cleanName = (profile.name || (profile as any).username || (profile as any).displayName || '').trim();
     const termLower = cleanName.toLowerCase();
     const termLowerTr = cleanName.toLocaleLowerCase('tr-TR');
     const termClean = turkishToEnglishFriendly(cleanName);
@@ -406,9 +404,14 @@ export async function saveUserProfileToFirestore(profile: UserProfile): Promise<
     const dataToSave = {
       ...profile,
       name: cleanName,
+      username: (profile as any).username || cleanName,
+      displayName: (profile as any).displayName || cleanName,
       name_lowercase: termLower,
       name_lowercase_tr: termLowerTr,
       name_clean: termClean,
+      isOnline: true,
+      lastSeen: Date.now(),
+      lastActive: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),
       updatedAt: serverTimestamp()
     };
@@ -419,6 +422,23 @@ export async function saveUserProfileToFirestore(profile: UserProfile): Promise<
   } catch (error) {
     console.error('Failed to save user profile:', error);
     handleFirestoreError(error, OperationType.WRITE, `users/${profile.id}`);
+  }
+}
+
+/**
+ * Updates user presence / online status in Firestore
+ */
+export async function updateUserPresence(uid: string, isOnline: boolean = true): Promise<void> {
+  if (!uid) return;
+  try {
+    const userDocRef = doc(db, 'users', uid);
+    await setDoc(userDocRef, {
+      isOnline,
+      lastSeen: Date.now(),
+      lastActive: new Date().toISOString()
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Failed to update user presence in Firestore:', err);
   }
 }
 
@@ -547,51 +567,71 @@ export async function searchUserByName(name: string): Promise<UserProfile[]> {
       limit(50)
     );
 
-    // Query 4: Case-sensitive exact match
+    // Query 4: Direct prefix on name, username, displayName
+    const qNamePrefix = query(
+      usersCollection,
+      where('name', '>=', term),
+      where('name', '<=', term + '\uf8ff'),
+      limit(50)
+    );
+
+    const qUsernamePrefix = query(
+      usersCollection,
+      where('username', '>=', term),
+      where('username', '<=', term + '\uf8ff'),
+      limit(50)
+    );
+
+    const qDisplayNamePrefix = query(
+      usersCollection,
+      where('displayName', '>=', term),
+      where('displayName', '<=', term + '\uf8ff'),
+      limit(50)
+    );
+
+    // Query 5: Case-sensitive exact matches
     const qExact1 = query(
       usersCollection,
       where('name', '==', term),
       limit(20)
     );
 
-    // Query 5: Case-insensitive exact match on name_lowercase
     const qExact2 = query(
       usersCollection,
       where('name_lowercase', '==', termLower),
       limit(20)
     );
 
-    // Query 6: Robust fallback querying the first 300 users for perfect offline/sync client-side search
+    const qExactUsername = query(
+      usersCollection,
+      where('username', '==', term),
+      limit(20)
+    );
+
+    const qExactDisplayName = query(
+      usersCollection,
+      where('displayName', '==', term),
+      limit(20)
+    );
+
+    // Query 6: Robust fallback querying recent 300 users for perfect client-side search
     const qFallback = query(
       usersCollection,
       limit(300)
     );
 
-    const [snap1, snap2, snap3, snapE1, snapE2, snapFallback] = await Promise.all([
-      getDocs(q1).catch((err) => {
-        console.warn('q1 search error:', err);
-        return null;
-      }),
-      getDocs(q2).catch((err) => {
-        console.warn('q2 search error:', err);
-        return null;
-      }),
-      getDocs(q3).catch((err) => {
-        console.warn('q3 search error:', err);
-        return null;
-      }),
-      getDocs(qExact1).catch((err) => {
-        console.warn('qExact1 search error:', err);
-        return null;
-      }),
-      getDocs(qExact2).catch((err) => {
-        console.warn('qExact2 search error:', err);
-        return null;
-      }),
-      getDocs(qFallback).catch((err) => {
-        console.warn('qFallback search error:', err);
-        return null;
-      })
+    const snapshots = await Promise.all([
+      getDocs(q1).catch((err) => { console.warn('q1 search error:', err); return null; }),
+      getDocs(q2).catch((err) => { console.warn('q2 search error:', err); return null; }),
+      getDocs(q3).catch((err) => { console.warn('q3 search error:', err); return null; }),
+      getDocs(qNamePrefix).catch((err) => { console.warn('qNamePrefix search error:', err); return null; }),
+      getDocs(qUsernamePrefix).catch((err) => { console.warn('qUsernamePrefix search error:', err); return null; }),
+      getDocs(qDisplayNamePrefix).catch((err) => { console.warn('qDisplayNamePrefix search error:', err); return null; }),
+      getDocs(qExact1).catch((err) => { console.warn('qExact1 search error:', err); return null; }),
+      getDocs(qExact2).catch((err) => { console.warn('qExact2 search error:', err); return null; }),
+      getDocs(qExactUsername).catch((err) => { console.warn('qExactUsername search error:', err); return null; }),
+      getDocs(qExactDisplayName).catch((err) => { console.warn('qExactDisplayName search error:', err); return null; }),
+      getDocs(qFallback).catch((err) => { console.warn('qFallback search error:', err); return null; })
     ]);
 
     const resultMap = new Map<string, UserProfile>();
@@ -599,36 +639,45 @@ export async function searchUserByName(name: string): Promise<UserProfile[]> {
     const processSnap = (snap: any) => {
       if (snap && !snap.empty) {
         snap.forEach((docSnap: any) => {
-          const data = docSnap.data() as UserProfile;
+          const data = docSnap.data() as any;
           if (data) {
             const userId = data.id || docSnap.id;
-            if (userId) {
-              resultMap.set(userId, { ...data, id: userId });
+            const resolvedName = (data.name || data.username || data.displayName || '').trim();
+            if (userId && resolvedName) {
+              resultMap.set(userId, {
+                ...data,
+                id: userId,
+                name: resolvedName,
+                username: data.username || resolvedName,
+                displayName: data.displayName || resolvedName
+              });
             }
           }
         });
       }
     };
 
-    processSnap(snap1);
-    processSnap(snap2);
-    processSnap(snap3);
-    processSnap(snapE1);
-    processSnap(snapE2);
-    processSnap(snapFallback);
+    snapshots.forEach(processSnap);
 
     const allUsers = Array.from(resultMap.values());
 
-    // Filter client-side: case-insensitive/Turkish-aware match anywhere in the name
+    // Filter client-side: case-insensitive/Turkish-aware match across name, username, or displayName
     const filtered = allUsers.filter(user => {
-      if (!user.name) return false;
-      return matchesSearchTerm(user.name, term);
+      const uName = (user.name || '').trim();
+      const uUsername = ((user as any).username || '').trim();
+      const uDisplayName = ((user as any).displayName || '').trim();
+
+      return (
+        matchesSearchTerm(uName, term) ||
+        matchesSearchTerm(uUsername, term) ||
+        matchesSearchTerm(uDisplayName, term)
+      );
     });
 
     // Sort: exact match first, then starts with, then locale compare
     filtered.sort((a, b) => {
-      const aName = a.name || '';
-      const bName = b.name || '';
+      const aName = (a.name || (a as any).username || (a as any).displayName || '').trim();
+      const bName = (b.name || (b as any).username || (b as any).displayName || '').trim();
       
       const aLower = aName.toLowerCase();
       const bLower = bName.toLowerCase();
@@ -685,9 +734,9 @@ export async function checkUsernameExists(username: string, currentUserId?: stri
       }))
     );
 
+    let isTaken = false;
     for (const snap of snapshots) {
       if (snap && !snap.empty) {
-        let isTaken = false;
         snap.forEach(docSnap => {
           if (!currentUserId || docSnap.id !== currentUserId) {
             isTaken = true;
@@ -697,7 +746,36 @@ export async function checkUsernameExists(username: string, currentUserId?: stri
       }
     }
 
-    return false;
+    // Secondary fallback scan for older or custom documents that might not have normalized fields
+    if (!isTaken) {
+      try {
+        const fallbackSnap = await getDocs(query(usersCollection, limit(200)));
+        if (fallbackSnap && !fallbackSnap.empty) {
+          fallbackSnap.forEach(docSnap => {
+            if (currentUserId && docSnap.id === currentUserId) return;
+            const docData = docSnap.data();
+            const docName = docData.name ? String(docData.name).trim() : '';
+            if (!docName) return;
+            const docLower = docName.toLowerCase();
+            const docLowerTr = docName.toLocaleLowerCase('tr-TR');
+            const docClean = turkishToEnglishFriendly(docName);
+
+            if (
+              docName === term ||
+              docLower === termLower ||
+              docLowerTr === termLowerTr ||
+              docClean === termClean
+            ) {
+              isTaken = true;
+            }
+          });
+        }
+      } catch (fErr) {
+        console.warn('Fallback username check failed:', fErr);
+      }
+    }
+
+    return isTaken;
   } catch (error) {
     console.error('Failed to check if username exists:', error);
     return false;

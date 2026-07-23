@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sparkles, Swords, User, Mail, Lock, ShieldAlert, LogIn, AlertCircle, Smartphone, ArrowLeft } from 'lucide-react';
 import { UserProfile } from '../types.js';
 import { validateUsername, validatePassword } from '../utils/usernameValidation.js';
@@ -82,6 +82,44 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
   const [isTouched, setIsTouched] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [firebaseError, setFirebaseError] = useState<string | null>(null);
+  const [dbUsernameError, setDbUsernameError] = useState<string | null>(null);
+  const [isCheckingUsername, setIsCheckingUsername] = useState<boolean>(false);
+
+  // Real-time debounced check for username availability in database
+  useEffect(() => {
+    if (mode !== 'guest' && mode !== 'register') {
+      setDbUsernameError(null);
+      setIsCheckingUsername(false);
+      return;
+    }
+
+    const trimmed = username.trim();
+    setDbUsernameError(null);
+
+    const clientErr = validateUsername(trimmed, []);
+    if (clientErr || !trimmed) {
+      setIsCheckingUsername(false);
+      return;
+    }
+
+    setIsCheckingUsername(true);
+    const timer = setTimeout(async () => {
+      try {
+        const exists = await checkUsernameExists(trimmed);
+        if (exists) {
+          setDbUsernameError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
+        } else {
+          setDbUsernameError(null);
+        }
+      } catch (err) {
+        console.warn('Error checking username uniqueness in AuthScreen:', err);
+      } finally {
+        setIsCheckingUsername(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [username, mode]);
 
   // Social & Account Linking states
   const [pendingCredential, setPendingCredential] = useState<any>(null);
@@ -364,8 +402,11 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
 
     try {
       if (mode === 'guest' || mode === 'register') {
+        setIsCheckingUsername(true);
         const usernameTaken = await checkUsernameExists(username);
+        setIsCheckingUsername(false);
         if (usernameTaken) {
+          setDbUsernameError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
           setFirebaseError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
           setLoading(false);
           return;
@@ -914,9 +955,17 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
             {/* Username field (Guest & Register mode) */}
             {(mode === 'guest' || mode === 'register') && (
               <div className="space-y-2">
-                <label className="text-[10px] font-bold text-amber-100/60 uppercase tracking-wider block font-sans">
-                  Kullanıcı Adın (Username)
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-amber-100/60 uppercase tracking-wider block font-sans">
+                    Kullanıcı Adın (Username)
+                  </label>
+                  {isCheckingUsername && (
+                    <span className="text-[10px] text-amber-300 font-semibold animate-pulse flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                      Kontrol ediliyor...
+                    </span>
+                  )}
+                </div>
                 <div className="relative">
                   <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center text-gray-500">
                     <User size={15} />
@@ -929,14 +978,15 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
                     onChange={(e) => {
                       setUsername(e.target.value);
                       setIsTouched(true);
+                      setFirebaseError(null);
                     }}
                     placeholder="Kullanıcı adını belirle..."
-                    className={`w-full bg-[#3D4756]/40 border ${usernameError ? 'border-rose-500 focus:ring-rose-400/40 focus:border-rose-400/40' : 'border-[#3E485A] focus:ring-amber-400/40 focus:border-amber-400/40'} rounded-2xl pl-10 pr-4 py-3 text-sm font-bold text-[#FAF6E9] placeholder-gray-500 focus:outline-none focus:ring-2 transition`}
+                    className={`w-full bg-[#3D4756]/40 border ${(usernameError || dbUsernameError) ? 'border-rose-500 focus:ring-rose-400/40 focus:border-rose-400/40' : 'border-[#3E485A] focus:ring-amber-400/40 focus:border-amber-400/40'} rounded-2xl pl-10 pr-4 py-3 text-sm font-bold text-[#FAF6E9] placeholder-gray-500 focus:outline-none focus:ring-2 transition`}
                   />
                 </div>
-                {usernameError && (
-                  <p className="text-xs text-rose-400 font-semibold px-1 mt-1 leading-normal">
-                    ⚠️ {usernameError}
+                {(usernameError || dbUsernameError) && (
+                  <p className="text-xs text-rose-400 font-semibold px-1 mt-1 leading-normal animate-fade-in">
+                    ⚠️ {usernameError || dbUsernameError}
                   </p>
                 )}
               </div>
@@ -1059,7 +1109,13 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
             {/* Action Button */}
             <button
               type="submit"
-              disabled={loading || (mode === 'register' && (!username.trim() || !email || !password)) || (mode === 'login' && (!email || !password)) || (mode !== 'guest' && !!usernameError) || !!passwordError}
+              disabled={
+                loading ||
+                isCheckingUsername ||
+                ((mode === 'guest' || mode === 'register') && (!username.trim() || !!usernameError || !!dbUsernameError)) ||
+                (mode === 'login' && (!email || !password)) ||
+                (mode === 'register' && (!email || !password || !!passwordError))
+              }
               className="w-full bg-[#FAF6E9] hover:bg-[#F3EFE0] active:scale-[0.98] active:translate-y-0.5 text-[#2E3748] font-black text-sm py-4 px-6 rounded-2xl shadow-[0_4px_0_#D9D4C3,0_6px_10px_rgba(0,0,0,0.15)] disabled:opacity-50 disabled:pointer-events-none transition-all flex items-center justify-center uppercase tracking-wider cursor-pointer border border-[#EBE6D5] mt-4"
             >
               {loading ? (

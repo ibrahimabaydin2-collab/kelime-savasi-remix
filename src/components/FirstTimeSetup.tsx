@@ -22,6 +22,36 @@ export default function FirstTimeSetup({ profile, onComplete }: FirstTimeSetupPr
   const [dbError, setDbError] = useState<string | null>(null);
   const [isChecking, setIsChecking] = useState<boolean>(false);
 
+  // Debounced real-time check for username availability in database
+  React.useEffect(() => {
+    const trimmed = username.trim();
+    setDbError(null);
+
+    const clientErr = validateUsername(trimmed, [], profile.id);
+    if (clientErr || !trimmed) {
+      setIsChecking(false);
+      return;
+    }
+
+    setIsChecking(true);
+    const timer = setTimeout(async () => {
+      try {
+        const exists = await checkUsernameExists(trimmed, profile.id);
+        if (exists) {
+          setDbError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
+        } else {
+          setDbError(null);
+        }
+      } catch (err) {
+        console.warn('Error checking username uniqueness in FirstTimeSetup:', err);
+      } finally {
+        setIsChecking(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [username, profile.id]);
+
   const error = (isTouched || username ? validateUsername(username, [], profile.id) : null) || dbError;
 
   const handleCustomAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
