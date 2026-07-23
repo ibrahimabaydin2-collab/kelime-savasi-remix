@@ -67,13 +67,49 @@ try {
   // ignore
 }
 
-// Initialize Firestore with auto-detect long polling and cache configuration
-export const db = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
-  localCache: usePersistentCache 
-    ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
-    : memoryLocalCache()
-}, dbId);
+// Helper to safely initialize Firestore across physical mobile APKs, WebViews, and Web
+function createSafeFirestore() {
+  const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
+  const isMobileOrHybrid = typeof window !== 'undefined' && (
+    /android/i.test(ua) ||
+    /iphone|ipad|ipod/i.test(ua) ||
+    !!(window as any).Capacitor ||
+    !!(window as any).AndroidBridge ||
+    window.location.protocol === 'file:' ||
+    window.location.protocol.startsWith('capacitor') ||
+    window.location.protocol.startsWith('ionic')
+  );
+
+  let cacheConfig;
+  try {
+    // Only use persistent multi-tab cache on standard desktop browsers.
+    // On physical Android APKs and WebViews, IndexedDB / WebLocks can cause SecurityError / DOMException or hang connection.
+    if (usePersistentCache && !isMobileOrHybrid) {
+      cacheConfig = persistentLocalCache({ tabManager: persistentMultipleTabManager() });
+    } else {
+      cacheConfig = memoryLocalCache();
+    }
+  } catch (e) {
+    console.warn('[Firebase] Fallback to memoryLocalCache due to cache init warning:', e);
+    cacheConfig = memoryLocalCache();
+  }
+
+  try {
+    return initializeFirestore(app, {
+      experimentalForceLongPolling: isMobileOrHybrid ? true : undefined,
+      experimentalAutoDetectLongPolling: isMobileOrHybrid ? undefined : true,
+      localCache: cacheConfig
+    }, dbId);
+  } catch (err) {
+    console.warn('[Firebase] Primary initializeFirestore failed, trying resilient fallback:', err);
+    return initializeFirestore(app, {
+      experimentalForceLongPolling: true,
+      localCache: memoryLocalCache()
+    }, dbId);
+  }
+}
+
+export const db = createSafeFirestore();
 
 export enum OperationType {
   CREATE = 'create',

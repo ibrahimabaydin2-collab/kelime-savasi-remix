@@ -944,6 +944,15 @@ export default function App() {
   }, [duelWordLength]);
 
   const [matchmakingStatus, setMatchmakingStatus] = useState<'idle' | 'queued'>('idle');
+  const matchmakingStatusRef = useRef<'idle' | 'queued'>('idle');
+  useEffect(() => {
+    matchmakingStatusRef.current = matchmakingStatus;
+  }, [matchmakingStatus]);
+
+  const duelWordLengthRef = useRef<number>(5);
+  useEffect(() => {
+    duelWordLengthRef.current = duelWordLength;
+  }, [duelWordLength]);
 
   // Settings state moved up to avoid block scope issues with notification effects
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -1048,6 +1057,10 @@ export default function App() {
     const handleAppActive = () => {
       setIsAppActive(true);
       resumeAudioContext();
+      if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+        console.log('[App Active] Socket disconnected or closing, triggering reconnect...');
+        setReconnectCounter((prev) => prev + 1);
+      }
     };
 
     const handleAppInactive = () => {
@@ -1616,24 +1629,40 @@ export default function App() {
 
           if (profile && profile.id) {
             try {
+              const selfName = getEffectiveSelfName(profile, auth.currentUser);
               ws?.send(JSON.stringify({
                 type: 'join',
                 id: profile.id,
-                name: getEffectiveSelfName(profile, auth.currentUser),
+                name: selfName,
                 avatarUrl: profile.avatarUrl || ''
               }));
+
+              if (matchmakingStatusRef.current === 'queued') {
+                const targetLen = duelWordLengthRef.current || 5;
+                ws?.send(JSON.stringify({
+                  type: 'join_matchmaking',
+                  wordLength: targetLen,
+                  id: profile.id,
+                  userId: profile.id,
+                  playerId: profile.id,
+                  name: selfName,
+                  username: selfName,
+                  displayName: selfName,
+                  avatarUrl: profile.avatarUrl || ''
+                }));
+              }
             } catch (e) {
               console.error('[WebSocket Manager] Error sending join message:', e);
             }
           }
 
-          // Heartbeat ping every 25s
+          // Heartbeat ping every 10s (prevents mobile carrier NAT drops)
           if (pingInterval) clearInterval(pingInterval);
           pingInterval = setInterval(() => {
             if (ws && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'ping' }));
             }
-          }, 25000);
+          }, 10000);
         };
 
         ws.onmessage = (event) => {

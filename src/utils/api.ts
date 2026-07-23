@@ -55,6 +55,18 @@ if (typeof window !== 'undefined') {
       const customFetch = async function (this: any, input: any, init: any) {
         let url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as any).url);
         
+        // Auto-resolve relative /api/ URLs on mobile native APKs to full backend URL
+        if (url && url.startsWith('/api/')) {
+          url = getApiUrl(url);
+          if (typeof input === 'string') {
+            input = url;
+          } else if (input instanceof URL) {
+            input = new URL(url);
+          } else if (input && typeof input === 'object') {
+            input = { ...input, url };
+          }
+        }
+
         if (url && (url.includes('run.app') || url.includes('onrender.com') || url.startsWith('/api/'))) {
           init = init || {};
           const headers = new Headers(init.headers || {});
