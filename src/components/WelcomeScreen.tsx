@@ -421,8 +421,13 @@ export default function WelcomeScreen({
   const error = (isTouched || editName !== profile.name ? validateUsername(editName, [], profile.id) : null) || dbUsernameError;
 
   React.useEffect(() => {
-    setEditName(profile.name);
-  }, [profile.name]);
+    if (profile.name) {
+      setEditName((prev) => (prev === profile.name ? prev : profile.name));
+    }
+    if (profile.avatarUrl) {
+      setSelectedAvatar((prev) => (prev === profile.avatarUrl ? prev : profile.avatarUrl));
+    }
+  }, [profile.name, profile.avatarUrl]);
 
   const AVATAR_PRESETS = ['⚔️', '🧠', '🐺', '🦁', '🧙‍♂️', '🦊', '👾', '🦄', '⚡', '👑', '🎯', '🚀', '🔥', '🐉', '🐼', '🛡️', '🏆', '🦉'];
 

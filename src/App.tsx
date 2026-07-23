@@ -200,102 +200,111 @@ const safeLocalStorage = {
   }
 };
 
-const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?: string; username?: string; displayName?: string; avatarUrl?: string }) => {
-  const selfId = profile.id;
+const isGenericName = (n?: string) =>
+  !n ||
+  n === 'Oyuncu' ||
+  n === 'Kelime Oyuncusu' ||
+  n === 'Oyuncu 1' ||
+  n === 'Oyuncu 2' ||
+  n.startsWith('Misafir_') ||
+  n.startsWith('Savaşçı_');
+
+const getEffectiveSelfName = (
+  profile: { name?: string; username?: string; displayName?: string },
+  currentAuthUser?: any
+): string => {
   const savedUsername = safeLocalStorage.getItem('saved_username');
-  const selfName = profile.name || profile.username || profile.displayName || savedUsername || 'Oyuncu';
-  const selfUsername = profile.username || selfName;
-  const selfAvatar = profile.avatarUrl || '';
+  const pName = profile?.name || profile?.username || profile?.displayName || currentAuthUser?.displayName;
+
+  if (pName && !isGenericName(pName)) {
+    return pName.trim();
+  }
+  if (savedUsername && !isGenericName(savedUsername)) {
+    return savedUsername.trim();
+  }
+  if (pName && pName.trim()) {
+    return pName.trim();
+  }
+  if (savedUsername && savedUsername.trim()) {
+    return savedUsername.trim();
+  }
+  return 'Oyuncu';
+};
+
+const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?: string; username?: string; displayName?: string; avatarUrl?: string }, rawPlayers?: any) => {
+  const currentAuthUser = auth.currentUser;
+  const selfId = currentAuthUser?.uid || profile.id;
+  const selfName = getEffectiveSelfName(profile, currentAuthUser);
 
   const p1 = rawP1 || {};
   const p2 = rawP2 || {};
 
-  const p1Id = p1.id || p1.uid || p1.playerId;
-  const p2Id = p2.id || p2.uid || p2.playerId;
+  let p1Id = p1.id || p1.uid || p1.playerId;
+  let p2Id = p2.id || p2.uid || p2.playerId;
 
-  const p1RawName = p1.name || p1.username || p1.displayName;
-  const p2RawName = p2.name || p2.username || p2.displayName;
-
-  const p1IsSelf = (p1Id && p1Id === selfId) || (p1RawName && (p1RawName === selfName || p1RawName === profile.name) && p1RawName !== 'Oyuncu 1' && p1RawName !== 'Oyuncu 2');
-  const p2IsSelf = (p2Id && p2Id === selfId) || (p2RawName && (p2RawName === selfName || p2RawName === profile.name) && p2RawName !== 'Oyuncu 1' && p2RawName !== 'Oyuncu 2');
-
-  let finalP1: any;
-  let finalP2: any;
-
-  if (p1IsSelf) {
-    finalP1 = {
-      uid: selfId,
-      id: selfId,
-      name: selfName,
-      username: selfUsername,
-      displayName: selfName,
-      avatarUrl: selfAvatar || p1.avatarUrl || ''
-    };
-    const oppId = (p2Id && p2Id !== selfId && p2Id !== 'p1' && p2Id !== 'p2') ? p2Id : 'opponent';
-    const oppName = (p2RawName && p2RawName !== selfName && p2RawName !== 'Oyuncu 1' && p2RawName !== 'Oyuncu 2' && p2RawName !== 'Oyuncu')
-      ? p2RawName
-      : 'Rakip';
-    finalP2 = {
-      uid: oppId,
-      id: oppId,
-      name: oppName,
-      username: oppName,
-      displayName: oppName,
-      avatarUrl: p2.avatarUrl || ''
-    };
-  } else if (p2IsSelf) {
-    finalP2 = {
-      uid: selfId,
-      id: selfId,
-      name: selfName,
-      username: selfUsername,
-      displayName: selfName,
-      avatarUrl: selfAvatar || p2.avatarUrl || ''
-    };
-    const oppId = (p1Id && p1Id !== selfId && p1Id !== 'p1' && p1Id !== 'p2') ? p1Id : 'opponent';
-    const oppName = (p1RawName && p1RawName !== selfName && p1RawName !== 'Oyuncu 1' && p1RawName !== 'Oyuncu 2' && p1RawName !== 'Oyuncu')
-      ? p1RawName
-      : 'Rakip';
-    finalP1 = {
-      uid: oppId,
-      id: oppId,
-      name: oppName,
-      username: oppName,
-      displayName: oppName,
-      avatarUrl: p1.avatarUrl || ''
-    };
-  } else {
-    // Neither was explicitly matched as self (e.g. dummy/placeholder IDs like 'p1' / 'p2')
-    // Always assign Player 1 as Self (the current user) and Player 2 as Opponent
-    const oppName = (p2RawName && p2RawName !== selfName && p2RawName !== 'Oyuncu 1' && p2RawName !== 'Oyuncu 2' && p2RawName !== 'Oyuncu')
-      ? p2RawName
-      : ((p1RawName && p1RawName !== selfName && p1RawName !== 'Oyuncu 1' && p1RawName !== 'Oyuncu 2' && p1RawName !== 'Oyuncu') ? p1RawName : 'Rakip');
-
-    const oppId = (p2Id && p2Id !== selfId && p2Id !== 'p1' && p2Id !== 'p2') 
-      ? p2Id 
-      : ((p1Id && p1Id !== selfId && p1Id !== 'p1' && p1Id !== 'p2') ? p1Id : 'opponent');
-
-    finalP1 = {
-      uid: selfId,
-      id: selfId,
-      name: selfName,
-      username: selfUsername,
-      displayName: selfName,
-      avatarUrl: selfAvatar || p1.avatarUrl || ''
-    };
-    finalP2 = {
-      uid: oppId,
-      id: oppId,
-      name: oppName,
-      username: oppName,
-      displayName: oppName,
-      avatarUrl: p2.avatarUrl || p1.avatarUrl || ''
-    };
+  if (!p1Id && rawPlayers && typeof rawPlayers === 'object') {
+    const keys = Object.keys(rawPlayers);
+    if (keys[0]) p1Id = keys[0];
+  }
+  if (!p2Id && rawPlayers && typeof rawPlayers === 'object') {
+    const keys = Object.keys(rawPlayers);
+    if (keys[1]) p2Id = keys[1];
   }
 
+  // Real-time dynamic updates for players from rawPlayers map
+  const p1Dynamic = (rawPlayers && p1Id && rawPlayers[p1Id]) || {};
+  const p2Dynamic = (rawPlayers && p2Id && rawPlayers[p2Id]) || {};
+
+  const mergedP1 = { ...p1, ...p1Dynamic };
+  const mergedP2 = { ...p2, ...p2Dynamic };
+
+  let p1Name = mergedP1.name || mergedP1.username || mergedP1.displayName || p1.name || p1.username || p1.displayName;
+  let p2Name = mergedP2.name || mergedP2.username || mergedP2.displayName || p2.name || p2.username || p2.displayName;
+
+  let p1Avatar = mergedP1.avatarUrl || mergedP1.avatar || p1.avatarUrl || p1.avatar || '';
+  let p2Avatar = mergedP2.avatarUrl || mergedP2.avatar || p2.avatarUrl || p2.avatar || '';
+
+  if (!p1Id) p1Id = 'p1';
+  if (!p2Id) p2Id = 'p2';
+
+  if (p1Id === selfId || p1Id === profile.id) {
+    p1Name = selfName;
+    if (profile.avatarUrl) p1Avatar = profile.avatarUrl;
+  } else if (!p1Name || isGenericName(p1Name)) {
+    p1Name = 'Rakip';
+  }
+
+  if (p2Id === selfId || p2Id === profile.id) {
+    p2Name = selfName;
+    if (profile.avatarUrl) p2Avatar = profile.avatarUrl;
+  } else if (!p2Name || isGenericName(p2Name)) {
+    p2Name = 'Rakip';
+  }
+
+  const finalP1 = {
+    ...mergedP1,
+    uid: p1Id,
+    id: p1Id,
+    name: p1Name,
+    username: p1Name,
+    displayName: p1Name,
+    avatarUrl: p1Avatar
+  };
+
+  const finalP2 = {
+    ...mergedP2,
+    uid: p2Id,
+    id: p2Id,
+    name: p2Name,
+    username: p2Name,
+    displayName: p2Name,
+    avatarUrl: p2Avatar
+  };
+
   const parsedPlayers = {
-    [finalP1.id]: { id: finalP1.id, name: finalP1.name, avatarUrl: finalP1.avatarUrl },
-    [finalP2.id]: { id: finalP2.id, name: finalP2.name, avatarUrl: finalP2.avatarUrl }
+    ...(rawPlayers || {}),
+    [p1Id]: { ...(rawPlayers?.[p1Id] || {}), ...mergedP1, id: p1Id, name: p1Name, avatarUrl: p1Avatar },
+    [p2Id]: { ...(rawPlayers?.[p2Id] || {}), ...mergedP2, id: p2Id, name: p2Name, avatarUrl: p2Avatar }
   };
 
   return {
@@ -1097,6 +1106,9 @@ export default function App() {
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [showDefinitionModal, setShowDefinitionModal] = useState<boolean>(false);
   const [showCongratsModal, setShowCongratsModal] = useState<boolean>(false);
+  const handledMatchEndIdsRef = useRef<Set<string>>(new Set());
+  const lastFetchedDefinitionWordRef = useRef<string>('');
+  const isFetchingDefinitionRef = useRef<boolean>(false);
   const [opponentLeftDuringMatch, setOpponentLeftDuringMatch] = useState<boolean>(false);
   const [isMatchmakingLocked, setIsMatchmakingLocked] = useState<boolean>(false);
   const [unlockedBadgeToShow, setUnlockedBadgeToShow] = useState<Badge | null>(null);
@@ -1607,7 +1619,7 @@ export default function App() {
               ws?.send(JSON.stringify({
                 type: 'join',
                 id: profile.id,
-                name: profile.name || profile.username || profile.displayName || safeLocalStorage.getItem('saved_username') || 'Oyuncu',
+                name: getEffectiveSelfName(profile, auth.currentUser),
                 avatarUrl: profile.avatarUrl || ''
               }));
             } catch (e) {
@@ -1637,7 +1649,7 @@ export default function App() {
               setMatchmakingStatus('idle');
               setIsMatchmakingLocked(false);
               
-              const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile);
+              const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
               const target = turkishUpper(data.targetWord || data.correctWord || '');
               if (target) setTargetWord(target);
@@ -1654,7 +1666,7 @@ export default function App() {
               });
               setWordLength(data.wordLength);
             } else if (data.type === 'match_ready') {
-              const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile);
+              const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
               const target = turkishUpper(data.targetWord || data.correctWord || '');
               if (target) setTargetWord(target);
@@ -1685,7 +1697,7 @@ export default function App() {
               setOpponentLeftDuringMatch(false);
               setShowCongratsModal(false);
 
-              const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile);
+              const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
               setActiveMatch((prev: any) => ({
                 ...prev,
@@ -1877,12 +1889,15 @@ export default function App() {
     const matchId = activeMatch.matchId || activeMatch.id;
     if (!matchId) return;
 
-    const selfName = profile.name || profile.username || profile.displayName || 'Oyuncu';
-    const selfAvatar = profile.avatarUrl || '';
+    const currentAuthUser = auth.currentUser;
+    const currentUid = currentAuthUser?.uid || profile.id;
+    const selfName = getEffectiveSelfName(profile, currentAuthUser);
+    const selfAvatar = profile.avatarUrl || currentAuthUser?.photoURL || '';
 
     const playerState = {
-      uid: profile.id,
-      id: profile.id,
+      uid: currentUid,
+      id: currentUid,
+      name: selfName,
       username: selfName,
       displayName: selfName,
       avatarUrl: selfAvatar,
@@ -1899,7 +1914,7 @@ export default function App() {
 
     const payload: any = {
       roomId: matchId,
-      [`players.${profile.id}`]: playerState
+      [`players.${currentUid}`]: playerState
     };
 
     if (won || completed) {
@@ -1907,9 +1922,9 @@ export default function App() {
         payload.won = true;
         payload.gameOver = true;
         payload.isGameOver = true;
-        payload.winner = profile.id;
-        payload.winnerId = profile.id;
-        payload.finishedBy = profile.id;
+        payload.winner = currentUid;
+        payload.winnerId = currentUid;
+        payload.finishedBy = currentUid;
         payload.status = 'finished';
         payload.gameState = 'finished';
       }
@@ -2021,6 +2036,14 @@ export default function App() {
 
   // Instant/synchronous duel completion handler based on Firestore real-time snapshot or WebSocket
   const handleInstantMatchEnd = useCallback((winnerId: string, matchData?: any) => {
+    const currentMatchId = matchData?.id || matchData?.matchId || activeMatch?.id || activeMatch?.matchId;
+    if (currentMatchId) {
+      if (handledMatchEndIdsRef.current.has(currentMatchId)) {
+        return; // Already processed match end for this match ID! Prevent repeating audio / toast loop.
+      }
+      handledMatchEndIdsRef.current.add(currentMatchId);
+    }
+
     // Unconditionally allow immediate matchmaking re-entry
     setIsMatchmakingLocked(false);
 
@@ -2028,6 +2051,12 @@ export default function App() {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
+    }
+
+    // Unsubscribe snapshot listener to prevent further polling triggers
+    if (matchUnsubscribeRef.current) {
+      matchUnsubscribeRef.current();
+      matchUnsubscribeRef.current = null;
     }
 
     // Lock keypress / input listener
@@ -2090,7 +2119,6 @@ export default function App() {
     }
 
     // Trigger FCM High Priority Push Notification for background/sleeping devices via backend
-    const currentMatchId = activeMatch?.id || activeMatch?.matchId || matchData?.id || matchData?.matchId;
     if (currentMatchId) {
       const playersMap = activeMatch?.players || matchData?.players || {};
       const oppEntry = Object.values(playersMap).find((p: any) => p && p.id !== profile.id) as any;
@@ -2268,6 +2296,12 @@ export default function App() {
   // Helper function to inspect match/room document and trigger immediate match end on victory/defeat
   const checkAndTriggerMatchEnd = useCallback((matchData: any) => {
     if (!matchData) return false;
+
+    const matchIdKey = matchData.id || matchData.matchId || activeMatch?.id || activeMatch?.matchId;
+    if (matchIdKey && handledMatchEndIdsRef.current.has(matchIdKey)) {
+      return true; // Match end was already processed for this match
+    }
+
     const winningPlayerEntry = Object.entries(matchData.players || {}).find(([_, p]: [string, any]) => p?.won === true || (p?.completed === true && p?.won === true));
     
     let winnerId = matchData.winnerId || 
@@ -2315,8 +2349,16 @@ export default function App() {
       if (!data) return;
 
       setActiveMatch((prev: any) => {
-        if (!prev) return prev;
-        const currentPlayers = prev.players || {};
+        const base = prev || {
+          id: data.matchId || data.id,
+          matchId: data.matchId || data.id,
+          targetWord: data.targetWord || data.correctWord || '',
+          correctWord: data.targetWord || data.correctWord || '',
+          wordLength: data.wordLength || 5,
+          gameState: data.gameState || 'PLAYING',
+          status: data.status || 'playing'
+        };
+        const currentPlayers = base.players || {};
         const incomingPlayers = data.players || {};
         const mergedPlayers = { ...currentPlayers };
 
@@ -2327,12 +2369,54 @@ export default function App() {
           };
         });
 
-        return {
-          ...prev,
+        const currentAuthUid = auth.currentUser?.uid;
+        const selfId = currentAuthUid || profile.id;
+        const activeProfile = { ...profile, id: selfId };
+        const resolved = resolveDuelPlayers(
+          data.player1 || base.player1,
+          data.player2 || base.player2,
+          activeProfile,
+          data.players || mergedPlayers || base.players
+        );
+
+        const newMatch = {
+          ...base,
           ...data,
-          players: mergedPlayers
+          player1: resolved.player1,
+          player2: resolved.player2,
+          players: {
+            ...resolved.players,
+            ...mergedPlayers
+          }
         };
+
+        if (
+          prev &&
+          prev.id === newMatch.id &&
+          prev.gameState === newMatch.gameState &&
+          prev.status === newMatch.status &&
+          prev.targetWord === newMatch.targetWord &&
+          JSON.stringify(prev.player1) === JSON.stringify(newMatch.player1) &&
+          JSON.stringify(prev.player2) === JSON.stringify(newMatch.player2) &&
+          JSON.stringify(prev.players) === JSON.stringify(newMatch.players)
+        ) {
+          return prev;
+        }
+
+        return newMatch;
       });
+
+      if (data.gameState === 'PLAYING' || data.status === 'playing') {
+        setHasEnteredGame((prev) => (prev ? prev : true));
+        if (data.targetWord || data.correctWord) {
+          const newTarget = turkishUpper(data.targetWord || data.correctWord);
+          setTargetWord((prev) => (prev === newTarget ? prev : newTarget));
+        }
+        if (data.wordLength) {
+          const newLen = data.wordLength;
+          setWordLength((prev) => (prev === newLen ? prev : newLen));
+        }
+      }
 
       checkAndTriggerMatchEnd(data);
     };
@@ -2409,6 +2493,7 @@ export default function App() {
       matchUnsubscribeRef.current();
       matchUnsubscribeRef.current = null;
     }
+    handledMatchEndIdsRef.current.clear();
     setHasEnteredGame(false);
     setIsDailyPuzzle(false);
     setActiveMatch(null);
@@ -2494,19 +2579,22 @@ export default function App() {
         }
         return;
       }
+
       setSecondsLeft((prev) => {
         if (prev <= 1) {
           clearInterval(intervalId);
           if (timerRef.current === intervalId) {
             timerRef.current = null;
           }
-          if (activeMatch) {
+          if (activeMatchRef.current) {
             setGameStatus('idle'); // Freeze input and state while waiting for opponent or round sync
             showToast(`Süre bitti! Rakibin tamamlaması bekleniyor...`, 'error');
             syncMatchState(attempts, attempts.length, true, false, 0);
             return 0;
           } else {
-            handleGameLoss('Süre Sınırı Aşıldı');
+            if (gameStatusRef.current === 'playing') {
+              handleGameLoss('Süre Sınırı Aşıldı');
+            }
             return 0;
           }
         }
@@ -2528,24 +2616,37 @@ export default function App() {
     };
   }, [isAppActive, gameStatus, attempts.length, isValidating, hasEnteredGame, gameMode, activeMatch, isDailyPuzzle, targetWord, currentWordIndex, targetWords, cumulativeScore]); // Resets interval on attempt submission or validation change or exit or gameMode change
 
-  // Fetch direct definition for the target word with multi-layered client-side fallbacks (non-blocking & fail-safe)
-  const fetchTargetWordDefinition = async (wordToFetch: string) => {
+  // Fetch direct definition for the target word with single-attempt execution and no retry loops or sound warnings
+  const fetchTargetWordDefinition = async (wordToFetch: string, isManualRetry = false) => {
     if (!wordToFetch) return;
-    
+    const cleanWord = wordToFetch.trim();
+    if (!cleanWord) return;
+
+    // Prevent background retry loops for the exact same word unless user explicitly clicked manual retry
+    if (!isManualRetry && lastFetchedDefinitionWordRef.current === cleanWord) {
+      return;
+    }
+
+    if (isFetchingDefinitionRef.current && !isManualRetry) {
+      return;
+    }
+
+    lastFetchedDefinitionWordRef.current = cleanWord;
+    isFetchingDefinitionRef.current = true;
+
     try {
       setWordDefinition('loading');
       
-      // Step 1: Try fetching from backend with a strict 2s timeout for fast UI transition
       let definitionFound = false;
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
 
       try {
-        console.log(`[Client Definition] Attempting to fetch from backend for: "${wordToFetch}"`);
+        console.log(`[Client Definition] Single attempt fetch for: "${cleanWord}"`);
         const response = await fetch(getApiUrl('/api/get-definition'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ word: wordToFetch }),
+          body: JSON.stringify({ word: cleanWord }),
           signal: controller.signal
         });
         
@@ -2553,10 +2654,9 @@ export default function App() {
 
         if (response.ok) {
           const data = await response.json();
-          if (data && data.definition) {
-            const isGeneric = data.definition === 'Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.' ||
-                              data.definition.includes('tanımına şu an ulaşılamıyor') ||
-                              data.definition.includes('Yerel kelime listesinde kayıtlı geçerli');
+          if (data && data.definition && typeof data.definition === 'string') {
+            const isGeneric = data.definition.includes('tanımına şu an ulaşılamıyor') ||
+                              data.definition.includes('yerel kelime listesinde');
             
             if (!isGeneric) {
               setWordDefinition(data.definition);
@@ -2567,34 +2667,38 @@ export default function App() {
         }
       } catch (e: any) {
         clearTimeout(timeoutId);
-        console.warn('[Client Definition] Backend fetch skipped/failed/timed out:', e?.message || e);
+        console.warn('[Client Definition] Backend fetch skipped/failed:', e?.message || e);
       }
 
       if (definitionFound) return;
 
-      // Step 2: Fallback - Direct Wiktionary/validation query
+      // Single fallback attempt via local dictionary/validation (no sound warnings or retry loops)
       try {
-        const wikiRes = await validateWordClientSide(wordToFetch, wordToFetch.length);
+        const wikiRes = await validateWordClientSide(cleanWord, cleanWord.length);
         if (wikiRes && wikiRes.valid && wikiRes.definition) {
           const isGeneric = wikiRes.definition.includes('bulunamadı') || 
-                            wikiRes.definition.includes('Hata') ||
-                            wikiRes.definition.includes('yerel sözlükte bulundu') ||
-                            wikiRes.definition.includes('Wikisözlük\'te doğrulandı');
+                            wikiRes.definition.includes('Hata');
                             
           if (!isGeneric && wikiRes.definition.length > 5) {
-            setWordDefinition(wikiRes.definition);
+            let finalDef = wikiRes.definition;
+            if (finalDef.includes('yerel sözlükte bulundu')) {
+              finalDef = `${cleanWord.toUpperCase()} - Oyunda kullanılan geçerli bir Türkçe sözcüktür.`;
+            }
+            setWordDefinition(finalDef);
             return;
           }
         }
       } catch (wikiErr: any) {
-        console.warn('[Client Definition Fallback] Direct Wiktionary utility query failed:', wikiErr?.message || wikiErr);
+        console.warn('[Client Definition Fallback] Direct Wiktionary query failed:', wikiErr?.message || wikiErr);
       }
 
-      // Default ultimate fallback if all layers failed
-      setWordDefinition('Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.');
+      // Hata durumunda sadece bir kez yüklemeyi dene, sessizce hata mesajını göster (sesli uyarı yok)
+      setWordDefinition('Kelime anlamı şu anda yüklenemedi.');
     } catch (globalErr) {
-      console.warn('[Client Definition] Non-critical definition lookup error:', globalErr);
-      setWordDefinition('Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.');
+      console.warn('[Client Definition] Definition lookup error:', globalErr);
+      setWordDefinition('Kelime anlamı şu anda yüklenemedi.');
+    } finally {
+      isFetchingDefinitionRef.current = false;
     }
   };
 
@@ -2606,6 +2710,7 @@ export default function App() {
       } catch (e) {}
     } else {
       setWordDefinition('');
+      lastFetchedDefinitionWordRef.current = '';
     }
   }, [targetWord]);
 
@@ -3583,14 +3688,21 @@ export default function App() {
       queueUnsubscribeRef.current = null;
     }
 
-    if (profile && profile.id) {
-      clearMatchmakingState(profile.id).catch((err) => {
+    const currentAuthUser = auth.currentUser;
+    const currentUid = currentAuthUser?.uid || profile.id;
+    const selfName = getEffectiveSelfName(profile, currentAuthUser);
+    const selfAvatar = profile.avatarUrl || currentAuthUser?.photoURL || '';
+
+    if (currentUid) {
+      clearMatchmakingState(currentUid).catch((err) => {
         console.warn('Database cleanup failed in handleStartMatchmaking join:', err);
       });
+      if (currentUid !== profile.id) {
+        clearMatchmakingState(profile.id).catch(() => {});
+      }
     }
 
     const targetLen = matchWordsCount || duelWordLength || 5;
-    const selfName = profile.name || profile.username || profile.displayName || safeLocalStorage.getItem('saved_username') || 'Oyuncu';
 
     // Send WebSocket join if available
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -3598,9 +3710,13 @@ export default function App() {
         socketRef.current.send(JSON.stringify({
           type: 'join_matchmaking',
           wordLength: targetLen,
-          id: profile.id,
+          id: currentUid,
+          userId: currentUid,
+          playerId: currentUid,
           name: selfName,
-          avatarUrl: profile.avatarUrl || ''
+          username: selfName,
+          displayName: selfName,
+          avatarUrl: selfAvatar
         }));
       } catch (e) {
         console.warn("WebSocket join attempt failed:", e);
@@ -3612,12 +3728,15 @@ export default function App() {
 
     // Firestore Real-time Matchmaking Queue
     try {
-      const myQueueRef = doc(db, 'matchmaking_queue', profile.id);
+      const myQueueRef = doc(db, 'matchmaking_queue', currentUid);
       const queueData = {
-        id: profile.id,
-        playerId: profile.id,
+        id: currentUid,
+        playerId: currentUid,
+        uid: currentUid,
         name: selfName,
-        avatarUrl: profile.avatarUrl || '',
+        username: selfName,
+        displayName: selfName,
+        avatarUrl: selfAvatar,
         wordLength: targetLen,
         status: 'waiting',
         createdAt: serverTimestamp(),
@@ -3635,10 +3754,12 @@ export default function App() {
             const matchLen = data.wordLength || targetLen;
             const word = data.correctWord || data.targetWord;
             
+            const activeProfile = { ...profile, id: currentUid, name: selfName };
             const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(
               data.player1,
               data.player2 || data.opponent,
-              profile
+              activeProfile,
+              data.players
             );
 
             setActiveMatch({
@@ -3683,15 +3804,13 @@ export default function App() {
       );
 
       const querySnap = await getDocs(q);
-      const waitingDocs = querySnap.docs.filter(d => d.id !== profile.id);
+      const waitingDocs = querySnap.docs.filter(d => d.id !== currentUid && d.id !== profile.id);
 
       if (waitingDocs.length > 0) {
         const oppDoc = waitingDocs[0];
         const oppData = oppDoc.data();
-        const oppId = oppData.playerId || oppData.id || oppDoc.id;
-        const oppRawName = oppData.name || oppData.username || oppData.displayName;
-        const oppName = (oppRawName && oppRawName !== 'Oyuncu 1' && oppRawName !== 'Oyuncu 2') ? oppRawName : 'Rakip';
-        const selfName = profile.name || profile.username || profile.displayName || 'Sen';
+        const oppId = oppData.playerId || oppData.uid || oppData.id || oppDoc.id;
+        const oppName = oppData.name || oppData.username || oppData.displayName || 'Oyuncu';
 
         const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
         const word = turkishUpper(getRandomWord(targetLen, true));
@@ -3707,11 +3826,11 @@ export default function App() {
           gameState: 'PLAYING',
           status: 'playing',
           createdAt: new Date().toISOString(),
-          player1: { id: oppId, name: oppName, avatarUrl: oppData.avatarUrl || '' },
-          player2: { id: profile.id, name: selfName, avatarUrl: profile.avatarUrl || '' },
+          player1: { id: oppId, uid: oppId, name: oppName, username: oppName, displayName: oppName, avatarUrl: oppData.avatarUrl || '' },
+          player2: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar },
           players: {
-            [oppId]: { id: oppId, name: oppName, avatarUrl: oppData.avatarUrl || '', attempts: [], completed: false, won: false },
-            [profile.id]: { id: profile.id, name: selfName, avatarUrl: profile.avatarUrl || '', attempts: [], completed: false, won: false }
+            [oppId]: { id: oppId, uid: oppId, name: oppName, username: oppName, displayName: oppName, avatarUrl: oppData.avatarUrl || '', attempts: [], completed: false, won: false },
+            [currentUid]: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar, attempts: [], completed: false, won: false }
           },
           isGameOver: false,
           winner: null
@@ -3722,7 +3841,7 @@ export default function App() {
         await setDoc(doc(db, 'rooms', matchId), matchPayload);
 
         // Notify opponent via their queue document
-        await updateDoc(doc(db, 'matchmaking_queue', oppData.playerId), {
+        await updateDoc(doc(db, 'matchmaking_queue', oppId), {
           status: 'matched',
           matchId,
           correctWord: word,
@@ -3731,7 +3850,7 @@ export default function App() {
           player1: matchPayload.player1,
           player2: matchPayload.player2,
           players: matchPayload.players,
-          opponent: { id: profile.id, name: profile.name, avatarUrl: profile.avatarUrl }
+          opponent: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar }
         }).catch((err) => {
           console.warn("[Firestore Matchmaking] Failed updating opponent queue doc:", err);
         });
@@ -4201,36 +4320,35 @@ export default function App() {
             {/* Canlı Düello Kompakt Skor Tahtası (Live Duel Scoreboard) */}
         {activeMatch && (
           (() => {
-            const oppPlayer = (() => {
-              const pList = Object.values(activeMatch.players || {}) as any[];
-              const foundInPlayers = pList.find(p => p && p.id && p.id !== profile.id);
-              if (foundInPlayers && foundInPlayers.name && foundInPlayers.name !== 'Oyuncu 1' && foundInPlayers.name !== 'Oyuncu 2') {
-                return foundInPlayers;
-              }
-              if (activeMatch.player1 && activeMatch.player1.id !== profile.id && activeMatch.player1.name) {
-                return activeMatch.player1;
-              }
-              if (activeMatch.player2 && activeMatch.player2.id !== profile.id && activeMatch.player2.name) {
-                return activeMatch.player2;
-              }
-              if (activeMatch.opponent) return activeMatch.opponent;
-              return foundInPlayers || (activeMatch.player1?.id !== profile.id ? activeMatch.player1 : activeMatch.player2) || { id: 'opponent', name: 'Rakip', avatarUrl: '' };
-            })();
+            const currentAuthUid = auth.currentUser?.uid;
+            const selfId = currentAuthUid || profile.id;
+            const activeProfile = { ...profile, id: selfId };
+            const resolved = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, activeProfile, activeMatch.players);
+            
+            const p1 = resolved.player1;
+            const p2 = resolved.player2;
 
-            const oppId = oppPlayer?.id || Object.keys(activeMatch.players || {}).find(id => id !== profile.id) || '';
-            const selfState = activeMatch.players?.[profile.id] || {};
+            const p1IsSelf = (p1.id === selfId || p1.uid === selfId || p1.id === profile.id || p1.uid === profile.id);
+            const selfPlayer = p1IsSelf ? p1 : p2;
+            const oppPlayer = p1IsSelf ? p2 : p1;
+
+            const oppId = oppPlayer?.id || oppPlayer?.uid || 'opponent';
+            const selfKey = selfPlayer?.id || selfPlayer?.uid || selfId;
+
+            const selfState = activeMatch.players?.[selfKey] || activeMatch.players?.[profile.id] || activeMatch.players?.[selfId] || {};
             const oppState = activeMatch.players?.[oppId] || {};
 
-            const oppDisplayName = (oppPlayer?.name && oppPlayer.name !== 'Oyuncu 1' && oppPlayer.name !== 'Oyuncu 2')
-              ? oppPlayer.name
-              : (oppPlayer?.username || oppPlayer?.displayName || 'Rakip');
+            let oppDisplayName = oppPlayer?.name || oppPlayer?.username || oppPlayer?.displayName || '';
+            if (!oppDisplayName || oppDisplayName === 'Oyuncu 1' || oppDisplayName === 'Oyuncu 2' || oppDisplayName === 'Oyuncu') {
+              oppDisplayName = (oppId && oppId !== 'opponent') ? 'Misafir_' + oppId.substring(0, 5) : 'Rakip';
+            }
 
             const selfAttemptCount = attempts.length;
             const oppAttempts = activeMatch.attempts?.[oppId] || oppState.attempts || [];
             const oppAttemptCount = Array.isArray(oppAttempts) ? oppAttempts.length : 0;
 
-            const selfScore = selfState.score ?? activeMatch.scores?.[profile.id] ?? activeMatch.roundsWon?.[profile.id] ?? 0;
-            const oppScore = oppState.score ?? activeMatch.scores?.[oppId] ?? activeMatch.roundsWon?.[oppId] ?? 0;
+            const selfScore = selfState.score ?? activeMatch.scores?.[selfKey] ?? activeMatch.scores?.[profile.id] ?? 0;
+            const oppScore = oppState.score ?? activeMatch.scores?.[oppId] ?? 0;
 
             const selfCompleted = selfState.completed || gameStatus === 'won' || gameStatus === 'lost';
             const oppCompleted = oppState.completed;
@@ -4821,34 +4939,22 @@ export default function App() {
                     <div className="bg-black/25 rounded-2xl border border-white/5 p-3 mb-2 space-y-1.5 shrink-0">
                       <h4 className="text-[9px] font-black text-amber-300/80 tracking-widest uppercase font-mono text-left font-bold">OYUNCU DETAYLARI</h4>
                       {(() => {
-                        const { player1: resolvedP1, player2: resolvedP2 } = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, profile);
+                        const currentAuthUid = auth.currentUser?.uid;
+                        const selfId = currentAuthUid || profile.id;
+                        const activeProfile = { ...profile, id: selfId };
+                        const { player1: resolvedP1, player2: resolvedP2 } = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, activeProfile, activeMatch.players);
                         const duelPlayers = [resolvedP1, resolvedP2].filter(Boolean);
 
                         return duelPlayers.map((p: any, index: number) => {
                           const pId = p.id || p.uid || (index === 0 ? 'p1' : 'p2');
-                          const isSelf = pId === profile.id || p.id === profile.id || p.uid === profile.id;
+                          const isSelf = pId === selfId || pId === profile.id || p.id === selfId || p.uid === selfId || p.id === profile.id || p.uid === profile.id;
 
                           // Determine clean display name
                           let displayName = '';
                           if (isSelf) {
                             displayName = `${profile.name || profile.username || profile.displayName || 'Oyuncu'} (Sen)`;
                           } else {
-                            const rawName = p.name || p.username || p.displayName;
-                            if (rawName && rawName !== 'Oyuncu 1' && rawName !== 'Oyuncu 2' && rawName !== 'p1' && rawName !== 'p2' && rawName !== profile.name) {
-                              displayName = rawName;
-                            } else {
-                              // Fallback check in activeMatch.players or opponentName
-                              const foundOppInPlayers = Object.entries(activeMatch.players || {}).find(([k, v]: [string, any]) => 
-                                k !== profile.id && v?.name && v.name !== 'Oyuncu 1' && v.name !== 'Oyuncu 2'
-                              );
-                              if (foundOppInPlayers) {
-                                displayName = (foundOppInPlayers[1] as any).name;
-                              } else if (activeMatch.opponentName) {
-                                displayName = activeMatch.opponentName;
-                              } else {
-                                displayName = 'Rakip';
-                              }
-                            }
+                            displayName = p.name || p.username || p.displayName || 'Rakip';
                           }
 
                           // Determine attempts
@@ -5181,9 +5287,12 @@ export default function App() {
                   </p>
                   
                   {/* If there was an error, show a retry button */}
-                  {(wordDefinition.includes('hata') || wordDefinition.includes('yüklenemedi') || wordDefinition.includes('bağlantı') || wordDefinition.includes('ulaşılamıyor')) && (
+                  {Boolean(wordDefinition && typeof wordDefinition === 'string' && (wordDefinition.includes('hata') || wordDefinition.includes('yüklenemedi') || wordDefinition.includes('bağlantı') || wordDefinition.includes('ulaşılamıyor') || wordDefinition.includes('bulunamadı'))) && (
                     <button
-                      onClick={() => fetchTargetWordDefinition(targetWord)}
+                      onClick={() => {
+                        playClickSound(settings.soundEnabled);
+                        fetchTargetWordDefinition(targetWord, true);
+                      }}
                       className="w-full mt-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 py-2 px-4 rounded-xl text-xs font-bold transition duration-200 cursor-pointer flex items-center justify-center gap-1.5"
                     >
                       <RotateCcw size={12} />

@@ -663,9 +663,27 @@ app.post('/api/get-definition', async (req, res) => {
       console.warn('Firestore database read for definition failed/timed out:', dbErr);
     }
 
-    // 1. Fetch definition directly from word validation source (Wiktionary/Local) FIRST
-    console.log(`[Get Definition] Fetching definition directly from word validation source (Wiktionary/Local) for: "${normalized}"`);
-    const validationResult = await validateWordHybrid(normalized, true); // skipLocalCheck=true to force querying Wiktionary content
+    // 1. Try Gemini first if API key is present for fast, accurate dictionary definitions
+    if (process.env.GEMINI_API_KEY) {
+      console.log(`[Get Definition] Attempting fast Gemini lookup for: "${normalized}"`);
+      const geminiDef = await getDefinitionFromGemini(normalized);
+      if (geminiDef) {
+        const result = { valid: true, definition: geminiDef };
+        wordCache[cacheKey] = result;
+        
+        // Save to Firestore background
+        try {
+          const wordDocRef = doc(db, 'dictionary', normalized);
+          setDoc(wordDocRef, { word: normalized, valid: true, definition: geminiDef, createdAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+        } catch (e) {}
+
+        return res.json(result);
+      }
+    }
+
+    // 2. Fetch definition from Wiktionary/Local validation source as fallback
+    console.log(`[Get Definition] Fetching definition from Wiktionary/Local for: "${normalized}"`);
+    const validationResult = await validateWordHybrid(normalized, true);
     let definition = validationResult.definition;
 
     let isGeneric = !definition ||
@@ -677,33 +695,16 @@ app.post('/api/get-definition', async (req, res) => {
                     definition.includes('erişilemiyor') ||
                     definition.includes('Hata');
 
-    // 2. Fallback to Gemini if wiktionary definition was not found or was generic, ensuring we always have a good definition
     if (isGeneric || !definition) {
-      console.log(`[Get Definition] Word validation source returned generic or missing definition for "${normalized}". Trying Gemini as fallback...`);
-      const geminiDef = await getDefinitionFromGemini(normalized);
-      if (geminiDef) {
-        definition = geminiDef;
-        isGeneric = false;
-      }
+      definition = `${normalized} - Kelime Oyunu sözlüğünde yer alan geçerli bir Türkçe sözcüktür.`;
     }
 
-    // Use a clean custom fallback sentence if definition is missing or generic/not found
-    const isFallback = isGeneric || !definition || 
-                      definition === 'Yerel kelime listesinde kayıtlı geçerli bir Türkçe sözcüktür.' ||
-                      definition === 'Wikisözlük\'te kayıtlı geçerli bir Türkçe sözcüktür.' ||
-                      definition.includes('bulunamadı') || 
-                      definition.includes('yüklenemedi') || 
-                      definition.includes('erişilemiyor') ||
-                      definition.includes('oyunda yer alan') ||
-                      definition.includes('kelime haznenizde yer alan') ||
-                      definition.includes('resmi sözlük tanımına şu an ulaşılamıyor');
-
-    if (isFallback) {
-      definition = 'Bu kelimenin resmi sözlük tanımına şu an ulaşılamıyor.';
+    if (!definition || definition.length < 3) {
+      definition = `${normalized} - Kelime Oyunu sözlüğünde yer alan geçerli bir Türkçe sözcüktür.`;
     }
 
     const finalResult = {
-      valid: true, // Target words are always valid in game contexts
+      valid: true,
       definition
     };
 
@@ -1096,9 +1097,11 @@ async function startServer() {
       try {
         const data = JSON.parse(message.toString());
         if (data.type === 'join' || data.type === 'identify') {
+          const playerId = data.id || data.userId || data.playerId || data.uid || 'guest_' + Math.random().toString(36).substring(2, 7);
+          const playerName = data.name || data.username || data.displayName || 'Oyuncu';
           const clientInfo = {
-            id: data.id || data.userId || 'guest_' + Math.random().toString(36).substring(2, 7),
-            name: data.name || data.username || data.displayName || 'Oyuncu',
+            id: playerId,
+            name: playerName,
             avatarUrl: data.avatarUrl || ''
           };
           connectedClients.set(ws, clientInfo);
@@ -1107,8 +1110,8 @@ async function startServer() {
           sendWs(ws, { type: 'pong' });
         } else if (data.type === 'join_matchmaking') {
           const existingClient = connectedClients.get(ws);
-          const playerId = data.id || data.userId || data.playerId || existingClient?.id || 'p_' + Date.now();
-          const playerName = data.name || data.username || data.displayName || (existingClient?.name && existingClient.name !== 'Oyuncu' ? existingClient.name : '') || 'Oyuncu';
+          const playerId = data.id || data.userId || data.playerId || data.uid || existingClient?.id || 'p_' + Date.now();
+          const playerName = data.name || data.username || data.displayName || existingClient?.name || 'Oyuncu';
           const playerAvatar = data.avatarUrl || existingClient?.avatarUrl || '';
 
           const player = { id: playerId, name: playerName, avatarUrl: playerAvatar };
