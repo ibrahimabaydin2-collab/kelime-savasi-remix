@@ -1000,6 +1000,81 @@ async function startServer() {
   const activeDuelMatches = new Map<string, ActiveDuelMatch>();
   const socketToMatchIdMap = new Map<WebSocket, string>();
 
+  // GET /api/match-status for live real-time game state synchronization across physical mobile APKs
+  app.get('/api/match-status', async (req, res) => {
+    try {
+      const matchId = String(req.query.matchId || '').trim();
+      if (!matchId) return res.status(400).json({ error: 'matchId is required' });
+
+      // 1. Check in-memory active duel match first
+      const match = activeDuelMatches.get(matchId);
+      if (match) {
+        const isFinished = match.gameState === 'FINISHED';
+        return res.json({
+          id: match.matchId,
+          matchId: match.matchId,
+          gameState: match.gameState,
+          status: isFinished ? 'finished' : 'playing',
+          isGameOver: isFinished,
+          gameOver: isFinished,
+          winner: match.winner || null,
+          winnerId: match.winner || null,
+          loser: match.loser || null,
+          winReason: match.winReason || null,
+          correctWord: match.correctWord,
+          targetWord: match.correctWord,
+          player1: {
+            id: match.player1.id,
+            name: match.player1.name,
+            avatarUrl: match.player1.avatarUrl,
+            attempts: match.player1.attempts
+          },
+          player2: {
+            id: match.player2.id,
+            name: match.player2.name,
+            avatarUrl: match.player2.avatarUrl,
+            attempts: match.player2.attempts
+          },
+          players: {
+            [match.player1.id]: {
+              id: match.player1.id,
+              name: match.player1.name,
+              avatarUrl: match.player1.avatarUrl,
+              attempts: match.player1.attempts,
+              attemptsCount: match.player1.attempts.length,
+              completed: isFinished || match.player1.attempts.length >= 6,
+              won: match.winner === match.player1.id
+            },
+            [match.player2.id]: {
+              id: match.player2.id,
+              name: match.player2.name,
+              avatarUrl: match.player2.avatarUrl,
+              attempts: match.player2.attempts,
+              attemptsCount: match.player2.attempts.length,
+              completed: isFinished || match.player2.attempts.length >= 6,
+              won: match.winner === match.player2.id
+            }
+          }
+        });
+      }
+
+      // 2. Fallback to Firestore database
+      const matchSnap = await getDoc(doc(db, 'matches', matchId));
+      if (matchSnap.exists()) {
+        return res.json(matchSnap.data());
+      }
+      const roomSnap = await getDoc(doc(db, 'rooms', matchId));
+      if (roomSnap.exists()) {
+        return res.json(roomSnap.data());
+      }
+
+      return res.status(404).json({ error: 'Match not found' });
+    } catch (err) {
+      console.error('Error fetching match status:', err);
+      return res.status(500).json({ error: 'Failed to fetch match status' });
+    }
+  });
+
   function sendWs(ws: WebSocket | null | undefined, dataObj: any) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
@@ -1349,6 +1424,16 @@ async function startServer() {
             setTimeout(() => activeDuelMatches.delete(matchId), 15000);
           } else {
             sender.attempts.push({ word: guessStr, result: feedback });
+
+            // Persist the updated attempt list & count to Firestore immediately for real-time mobile snapshots and REST polling
+            const attemptUpdate = {
+              [`players.${sender.id}.attempts`]: sender.attempts,
+              [`players.${sender.id}.attemptsCount`]: sender.attempts.length,
+              [`players.${sender.id}.completed`]: sender.attempts.length >= 6,
+              updatedAt: new Date().toISOString()
+            };
+            setDoc(doc(db, 'matches', match.matchId), attemptUpdate, { merge: true }).catch(() => {});
+            setDoc(doc(db, 'rooms', match.matchId), attemptUpdate, { merge: true }).catch(() => {});
 
             sendWs(sender.ws, {
               type: 'guess_result',

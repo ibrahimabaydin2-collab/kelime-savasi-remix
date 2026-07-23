@@ -2460,8 +2460,22 @@ export default function App() {
       unsubRoom();
     };
 
-    // Fast polling fallback (every 800ms) for mobile WebViews / APKs where WebChannel streams can silently pause or disconnect
+    // Fast polling fallback (every 800ms) across REST API & Firestore for mobile WebViews / APKs where streams can pause
     const pollInterval = setInterval(async () => {
+      try {
+        // Direct HTTPS REST API poll to Render Node server (100% immune to WebSocket / Firestore stream drops on mobile)
+        const restRes = await fetch(getApiUrl(`/api/match-status?matchId=${matchId}`));
+        if (restRes.ok) {
+          const matchStatusData = await restRes.json();
+          if (matchStatusData && !matchStatusData.error) {
+            processRoomSnapshotData(matchStatusData);
+            return;
+          }
+        }
+      } catch (e) {
+        // Fall back to Firestore SDK getDoc if REST endpoint network blips
+      }
+
       try {
         const matchSnap = await getDoc(matchRef);
         if (matchSnap.exists()) {

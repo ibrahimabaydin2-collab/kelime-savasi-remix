@@ -11,14 +11,25 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 
+# Keep MainActivity and all inner classes/bridges
+-keep class com.kelimesavasi.app.MainActivity** { *; }
+-keepclassmembers class com.kelimesavasi.app.MainActivity** { *; }
+
 # Keep all Capacitor core and plugin classes
 -keep class com.getcapacitor.** { *; }
 
 # Keep application packages and database structures (prevents serialization/reflection issues in Firestore)
 -keep class com.kelimesavasi.app.** { *; }
 
-# Keep Firebase Auth and Firestore models intact
+# Keep Firebase Auth, Firestore, and gRPC/WebChannel classes intact
 -keep class com.google.firebase.** { *; }
+-keep class io.grpc.** { *; }
+
+# Keep OkHttp, WebSockets, and Net networking classes
+-keep class com.squareup.okhttp3.** { *; }
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
+-keep class java.net.** { *; }
 
 # Keep Play Services and AdMob classes
 -keep class com.google.android.gms.** { *; }
