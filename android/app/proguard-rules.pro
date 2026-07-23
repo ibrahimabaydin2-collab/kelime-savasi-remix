@@ -21,6 +21,16 @@
 # Keep application packages and database structures (prevents serialization/reflection issues in Firestore)
 -keep class com.kelimesavasi.app.** { *; }
 
+# Suppress warnings for legacy or missing references in gRPC, OkHttp, and Google dependencies (fixes R8 minifyRelease failure)
+-dontwarn io.grpc.**
+-dontwarn com.squareup.okhttp.**
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn org.checkerframework.**
+-dontwarn javax.annotation.**
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn org.codehaus.mojo.animal_sniffer.**
+
 # Keep Firebase Auth, Firestore, and gRPC/WebChannel classes intact
 -keep class com.google.firebase.** { *; }
 -keep class io.grpc.** { *; }
@@ -34,4 +44,5 @@
 # Keep Play Services and AdMob classes
 -keep class com.google.android.gms.** { *; }
 -keep class com.google.android.gms.ads.** { *; }
+
 
