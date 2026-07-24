@@ -745,10 +745,11 @@ async function startServer() {
     player2: MatchPlayer;
     winner: string | null;
     loser: string | null;
-    winReason: 'correct_word' | 'opponent_left' | 'max_attempts' | null;
+    winReason: 'correct_word' | 'opponent_left' | 'max_attempts' | 'timeout' | null;
     createdAt: number;
     startedAt?: number;
     finishedAt?: number;
+    disconnectedAt?: number;
   }
 
   const activeDuelMatches = new Map<string, ActiveDuelMatch>();
@@ -913,6 +914,7 @@ async function startServer() {
           const attemptUpdate = {
             [`players.${sender.id}.attempts`]: sender.attempts,
             [`players.${sender.id}.attemptsCount`]: sender.attempts.length,
+            [`players.${sender.id}.currentAttemptCount`]: sender.attempts.length,
             [`players.${sender.id}.completed`]: sender.attempts.length >= 6,
             updatedAt: new Date().toISOString()
           };
@@ -920,7 +922,7 @@ async function startServer() {
           setDoc(doc(db, 'rooms', targetMatchId), attemptUpdate, { merge: true }).catch(() => {});
 
           sendWs(sender.ws, { type: 'guess_result', matchId: targetMatchId, word: guessWord, feedback, isCorrect: false, isGameOver: false });
-          sendWs(opponent.ws, { type: 'opponent_attempt', matchId: targetMatchId, opponentId: sender.id, attemptCount: sender.attempts.length });
+          broadcastToMatch(match, { type: 'opponent_attempt', matchId: targetMatchId, opponentId: sender.id, attemptCount: sender.attempts.length });
         }
       } else {
         const attemptUpdate = {
@@ -961,6 +963,174 @@ async function startServer() {
       }
     }
   }
+
+  function getMatchEndPayload(match: ActiveDuelMatch) {
+    const isP1Win = match.winner === match.player1.id;
+    const isP2Win = match.winner === match.player2.id;
+    const isDraw = match.winner === 'draw';
+
+    const winnerObj = isP1Win ? match.player1 : isP2Win ? match.player2 : null;
+    const loserObj = isP1Win ? match.player2 : isP2Win ? match.player1 : null;
+
+    return {
+      type: 'match_end',
+      action: 'GAME_OVER',
+      event: 'MATCH_ENDED',
+      matchId: match.matchId,
+      id: match.matchId,
+      gameState: 'FINISHED',
+      status: 'finished',
+      isGameOver: true,
+      gameOver: true,
+      winnerUserId: match.winner || '',
+      winnerId: match.winner || '',
+      winner: match.winner || '',
+      loserUserId: match.loser || '',
+      loserId: match.loser || '',
+      loser: match.loser || '',
+      winnerName: winnerObj?.name || (isDraw ? 'Berabere' : 'Kazanan'),
+      loserName: loserObj?.name || 'Rakip',
+      winReason: match.winReason || 'correct_word',
+      correctWord: match.correctWord,
+      targetWord: match.correctWord,
+      attempts: {
+        [match.player1.id]: match.player1.attempts || [],
+        [match.player2.id]: match.player2.attempts || []
+      },
+      players: {
+        [match.player1.id]: {
+          id: match.player1.id,
+          name: match.player1.name,
+          avatarUrl: match.player1.avatarUrl || '',
+          attempts: match.player1.attempts || [],
+          attemptsCount: (match.player1.attempts || []).length,
+          won: isP1Win,
+          completed: true
+        },
+        [match.player2.id]: {
+          id: match.player2.id,
+          name: match.player2.name,
+          avatarUrl: match.player2.avatarUrl || '',
+          attempts: match.player2.attempts || [],
+          attemptsCount: (match.player2.attempts || []).length,
+          won: isP2Win,
+          completed: true
+        }
+      }
+    };
+  }
+
+  function broadcastToMatch(match: ActiveDuelMatch, dataObj: any) {
+    const p1Id = match.player1.id;
+    const p2Id = match.player2.id;
+    const matchId = match.matchId;
+
+    const targetSockets = new Set<WebSocket>();
+
+    if (match.player1.ws && match.player1.ws.readyState === WebSocket.OPEN) {
+      targetSockets.add(match.player1.ws);
+    }
+    if (match.player2.ws && match.player2.ws.readyState === WebSocket.OPEN) {
+      targetSockets.add(match.player2.ws);
+    }
+
+    for (const [ws, client] of connectedClients.entries()) {
+      if (ws.readyState === WebSocket.OPEN) {
+        if (client.id === p1Id || client.id === p2Id || socketToMatchIdMap.get(ws) === matchId) {
+          targetSockets.add(ws);
+        }
+      }
+    }
+
+    for (const ws of targetSockets) {
+      sendWs(ws, dataObj);
+    }
+  }
+
+  // Periodic room connection health and match timeout monitor
+  setInterval(() => {
+    const now = Date.now();
+    for (const [matchId, match] of activeDuelMatches.entries()) {
+      if (match.gameState === 'PLAYING' || match.gameState === 'READY') {
+        const p1Connected = match.player1.ws && match.player1.ws.readyState === WebSocket.OPEN;
+        const p2Connected = match.player2.ws && match.player2.ws.readyState === WebSocket.OPEN;
+
+        const matchAge = now - (match.startedAt || match.createdAt);
+
+        if (!p1Connected && !p2Connected) {
+          if (now - match.createdAt > 20000) {
+            activeDuelMatches.delete(matchId);
+          }
+        } else if (!p1Connected || !p2Connected) {
+          if (match.disconnectedAt && (now - match.disconnectedAt > 10000)) {
+            match.gameState = 'FINISHED';
+            const winnerPlayer = p1Connected ? match.player1 : match.player2;
+            const loserPlayer = p1Connected ? match.player2 : match.player1;
+
+            match.winner = winnerPlayer.id;
+            match.loser = loserPlayer.id;
+            match.winReason = 'opponent_left';
+            match.finishedAt = now;
+
+            console.log(`[Duel Server Timeout] Match ${matchId}: Opponent stayed disconnected >10s. Winner: ${winnerPlayer.name}`);
+
+            const finishData = {
+              gameOver: true,
+              isGameOver: true,
+              status: 'finished',
+              gameState: 'finished',
+              winner: winnerPlayer.id,
+              winnerId: winnerPlayer.id,
+              loser: loserPlayer.id,
+              winReason: 'opponent_left',
+              updatedAt: new Date().toISOString()
+            };
+            setDoc(doc(db, 'matches', matchId), finishData, { merge: true }).catch(() => {});
+            setDoc(doc(db, 'rooms', matchId), finishData, { merge: true }).catch(() => {});
+
+            const endPayload = getMatchEndPayload(match);
+            broadcastToMatch(match, endPayload);
+
+            socketToMatchIdMap.delete(match.player1.ws);
+            socketToMatchIdMap.delete(match.player2.ws);
+            setTimeout(() => activeDuelMatches.delete(matchId), 15000);
+          } else if (!match.disconnectedAt) {
+            match.disconnectedAt = now;
+          }
+        } else {
+          match.disconnectedAt = undefined;
+          if (matchAge > 120000) {
+            match.gameState = 'FINISHED';
+            match.winner = 'draw';
+            match.winReason = 'timeout';
+            match.finishedAt = now;
+
+            console.log(`[Duel Server Timeout] Match ${matchId} reached 120s max duration limit. Forcing draw result!`);
+
+            const finishData = {
+              gameOver: true,
+              isGameOver: true,
+              status: 'finished',
+              gameState: 'finished',
+              winner: 'draw',
+              winnerId: 'draw',
+              winReason: 'timeout',
+              updatedAt: new Date().toISOString()
+            };
+            setDoc(doc(db, 'matches', matchId), finishData, { merge: true }).catch(() => {});
+            setDoc(doc(db, 'rooms', matchId), finishData, { merge: true }).catch(() => {});
+
+            const endPayload = getMatchEndPayload(match);
+            broadcastToMatch(match, endPayload);
+
+            socketToMatchIdMap.delete(match.player1.ws);
+            socketToMatchIdMap.delete(match.player2.ws);
+            setTimeout(() => activeDuelMatches.delete(matchId), 15000);
+          }
+        }
+      }
+    }
+  }, 3000);
 
   function handlePlayerDisconnect(ws: WebSocket) {
     connectedClients.delete(ws);
@@ -1009,27 +1179,9 @@ async function startServer() {
         console.error('[Duel Server] Error updating Firestore room doc on disconnect:', err);
       });
 
-      // Notify remaining player
-      sendWs(remainingPlayer.ws, {
-        type: 'match_end',
-        action: 'GAME_OVER',
-        matchId: match.matchId,
-        gameState: 'FINISHED',
-        winnerUserId: remainingPlayer.id,
-        winnerId: remainingPlayer.id,
-        winner: remainingPlayer.id,
-        loserUserId: leftPlayer.id,
-        loserId: leftPlayer.id,
-        loser: leftPlayer.id,
-        winnerName: remainingPlayer.name,
-        loserName: leftPlayer.name,
-        winReason: 'opponent_left',
-        correctWord: match.correctWord,
-        attempts: {
-          [match.player1.id]: match.player1.attempts,
-          [match.player2.id]: match.player2.attempts
-        }
-      });
+      // Broadcast match end payload to room
+      const endPayload = getMatchEndPayload(match);
+      broadcastToMatch(match, endPayload);
 
       // Trigger FCM High Priority Push Notification for background/sleeping devices
       void sendFcmHighPriorityMatchEndNotification({
@@ -1053,7 +1205,7 @@ async function startServer() {
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
-        if (data.type === 'join' || data.type === 'identify') {
+        if (data.type === 'join' || data.type === 'identify' || data.type === 'rejoin') {
           const playerId = data.id || data.userId || data.playerId || data.uid || 'guest_' + Math.random().toString(36).substring(2, 7);
           const playerName = data.name || data.username || data.displayName || 'Oyuncu';
           const clientInfo = {
@@ -1063,6 +1215,24 @@ async function startServer() {
           };
           connectedClients.set(ws, clientInfo);
           sendWs(ws, { type: 'lobby', players: Array.from(connectedClients.values()) });
+
+          for (const [mId, mObj] of activeDuelMatches.entries()) {
+            if (mObj.player1.id === playerId) {
+              mObj.player1.ws = ws;
+              mObj.player1.connected = true;
+              socketToMatchIdMap.set(ws, mId);
+              if (mObj.gameState === 'FINISHED') {
+                sendWs(ws, getMatchEndPayload(mObj));
+              }
+            } else if (mObj.player2.id === playerId) {
+              mObj.player2.ws = ws;
+              mObj.player2.connected = true;
+              socketToMatchIdMap.set(ws, mId);
+              if (mObj.gameState === 'FINISHED') {
+                sendWs(ws, getMatchEndPayload(mObj));
+              }
+            }
+          }
         } else if (data.type === 'ping') {
           sendWs(ws, { type: 'pong' });
         } else if (data.type === 'join_matchmaking') {
@@ -1270,30 +1440,9 @@ async function startServer() {
               isGameOver: true
             });
 
-            // Send match end event to BOTH players simultaneously
-            const endPayload = {
-              type: 'match_end',
-              action: 'GAME_OVER',
-              matchId: match.matchId,
-              gameState: 'FINISHED',
-              winnerUserId: sender.id,
-              winnerId: sender.id,
-              winner: sender.id,
-              loserUserId: opponent.id,
-              loserId: opponent.id,
-              loser: opponent.id,
-              winnerName: sender.name,
-              loserName: opponent.name,
-              winReason: 'correct_word',
-              correctWord: match.correctWord,
-              attempts: {
-                [match.player1.id]: match.player1.attempts,
-                [match.player2.id]: match.player2.attempts
-              }
-            };
-
-            sendWs(match.player1.ws, endPayload);
-            sendWs(match.player2.ws, endPayload);
+            // Broadcast match end event to ALL players in the room simultaneously
+            const endPayload = getMatchEndPayload(match);
+            broadcastToMatch(match, endPayload);
 
             // Trigger FCM High Priority Push Notification for background/sleeping devices
             void sendFcmHighPriorityMatchEndNotification({
@@ -1316,6 +1465,7 @@ async function startServer() {
             const attemptUpdate = {
               [`players.${sender.id}.attempts`]: sender.attempts,
               [`players.${sender.id}.attemptsCount`]: sender.attempts.length,
+              [`players.${sender.id}.currentAttemptCount`]: sender.attempts.length,
               [`players.${sender.id}.completed`]: sender.attempts.length >= 6,
               updatedAt: new Date().toISOString()
             };
@@ -1331,7 +1481,7 @@ async function startServer() {
               isGameOver: false
             });
 
-            sendWs(opponent.ws, {
+            broadcastToMatch(match, {
               type: 'opponent_attempt',
               matchId: match.matchId,
               opponentId: sender.id,
@@ -1344,24 +1494,8 @@ async function startServer() {
               match.winReason = 'max_attempts';
               match.finishedAt = Date.now();
 
-              const endPayload = {
-                type: 'match_end',
-                action: 'GAME_OVER',
-                matchId: match.matchId,
-                gameState: 'FINISHED',
-                winnerUserId: 'draw',
-                winnerId: 'draw',
-                winner: 'draw',
-                winReason: 'max_attempts',
-                correctWord: match.correctWord,
-                attempts: {
-                  [match.player1.id]: match.player1.attempts,
-                  [match.player2.id]: match.player2.attempts
-                }
-              };
-
-              sendWs(match.player1.ws, endPayload);
-              sendWs(match.player2.ws, endPayload);
+              const endPayload = getMatchEndPayload(match);
+              broadcastToMatch(match, endPayload);
 
               // Trigger FCM High Priority Push Notification for background/sleeping devices
               void sendFcmHighPriorityMatchEndNotification({

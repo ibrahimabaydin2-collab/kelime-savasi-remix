@@ -1209,27 +1209,27 @@ export default function App() {
 
     setSelfCurrentAttemptCount(selfCount);
 
-    // Read currentAttemptCount from players object for opponent
-    const oppEntry = Object.entries(activeMatch.players).find(
-      ([id, p]: [string, any]) => id !== selfKey && id !== currentAuthUid && p && (p.id ? p.id !== selfKey : true)
-    );
+    // Read currentAttemptCount from players object for opponent across all non-self keys
+    let maxOppCount = 0;
+    Object.entries(activeMatch.players).forEach(([id, p]: [string, any]) => {
+      const isSelf = id === selfKey || id === currentAuthUid || (p && (p.id === selfKey || p.uid === selfKey || p.id === currentAuthUid || p.uid === currentAuthUid));
+      if (!isSelf && p) {
+        const count =
+          typeof p.currentAttemptCount === 'number'
+            ? p.currentAttemptCount
+            : typeof p.attemptsCount === 'number'
+            ? p.attemptsCount
+            : Array.isArray(p.attempts)
+            ? p.attempts.length
+            : 0;
+        if (count > maxOppCount) {
+          maxOppCount = count;
+        }
+      }
+    });
 
-    if (oppEntry) {
-      const oppPlayerData: any = oppEntry[1] || {};
-      const oppCount =
-        typeof oppPlayerData.currentAttemptCount === 'number'
-          ? oppPlayerData.currentAttemptCount
-          : typeof oppPlayerData.attemptsCount === 'number'
-          ? oppPlayerData.attemptsCount
-          : Array.isArray(oppPlayerData.attempts)
-          ? oppPlayerData.attempts.length
-          : 0;
-
-      setOppCurrentAttemptCount(oppCount);
-    } else {
-      setOppCurrentAttemptCount(0);
-    }
-  }, [activeMatch?.players, attempts.length, profile.id]);
+    setOppCurrentAttemptCount(maxOppCount);
+  }, [activeMatch, activeMatch?.players, attempts.length, profile.id]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const wasOnlineRef = useRef<boolean>(false);
@@ -1239,10 +1239,15 @@ export default function App() {
   const pendingMatchmakingRef = useRef<number | null>(null);
   const justLoggedInUidRef = useRef<string | null>(null);
   const activeMatchRef = useRef(activeMatch);
+  const hasEnteredGameRef = useRef(hasEnteredGame);
 
   useEffect(() => {
     activeMatchRef.current = activeMatch;
   }, [activeMatch]);
+
+  useEffect(() => {
+    hasEnteredGameRef.current = hasEnteredGame;
+  }, [hasEnteredGame]);
 
   const handleManualReconnect = () => {
     addNetworkLog('info', 'Manuel yeniden bağlanma tetiklendi.');
@@ -1838,34 +1843,58 @@ export default function App() {
 
               playEnterSound(settings.soundEnabled);
             } else if (data.type === 'opponent_attempt') {
-              showToast(`Rakip bir tahmin yaptı! (${data.attemptCount}. deneme)`, 'info');
+              if (!hasEnteredGameRef.current || !activeMatchRef.current) return;
+              const currentAuthUid = auth.currentUser?.uid;
+              const selfId = currentAuthUid || profile.id;
+              if (data.opponentId && (data.opponentId === selfId || data.opponentId === profile.id)) {
+                return;
+              }
+
+              const targetCount = Number(data.attemptCount) || 1;
+              showToast(`Rakip bir tahmin yaptı! (${targetCount}. deneme)`, 'info');
+
+              setOppCurrentAttemptCount((prev) => Math.max(prev, targetCount));
+
               setActiveMatch((prev: any) => {
                 if (!prev) return null;
-                const currentAuthUid = auth.currentUser?.uid;
-                const selfId = currentAuthUid || profile.id;
-                const oppId = data.opponentId || Object.keys(prev.players || {}).find(id => id !== selfId && id !== profile.id) || 'opponent';
                 const updatedPlayers = { ...(prev.players || {}) };
-                const existingOpp = updatedPlayers[oppId] || { id: oppId, name: 'Rakip' };
-                const currentAttempts = Array.isArray(existingOpp.attempts) ? existingOpp.attempts : [];
-                
-                const targetCount = Number(data.attemptCount) || (currentAttempts.length + 1);
-                let newAttempts = [...currentAttempts];
-                while (newAttempts.length < targetCount) {
-                  newAttempts.push({ word: '*****', feedback: ['grey', 'grey', 'grey', 'grey', 'grey'] });
+
+                Object.keys(updatedPlayers).forEach((key) => {
+                  const p = updatedPlayers[key];
+                  const isSelfKey = key === selfId || key === profile.id || p?.id === selfId || p?.uid === selfId || p?.id === profile.id || p?.uid === profile.id;
+                  if (!isSelfKey) {
+                    const currentAtts = Array.isArray(p?.attempts) ? p.attempts : [];
+                    let newAtts = [...currentAtts];
+                    while (newAtts.length < targetCount) {
+                      newAtts.push({ word: '*****', feedback: ['grey', 'grey', 'grey', 'grey', 'grey'] });
+                    }
+                    updatedPlayers[key] = {
+                      ...p,
+                      attempts: newAtts,
+                      attemptsCount: targetCount,
+                      currentAttemptCount: targetCount
+                    };
+                  }
+                });
+
+                const oppId = data.opponentId;
+                if (oppId && !updatedPlayers[oppId] && oppId !== selfId && oppId !== profile.id) {
+                  let newAtts = [];
+                  while (newAtts.length < targetCount) {
+                    newAtts.push({ word: '*****', feedback: ['grey', 'grey', 'grey', 'grey', 'grey'] });
+                  }
+                  updatedPlayers[oppId] = {
+                    id: oppId,
+                    name: 'Rakip',
+                    attempts: newAtts,
+                    attemptsCount: targetCount,
+                    currentAttemptCount: targetCount
+                  };
                 }
-
-                updatedPlayers[oppId] = {
-                  ...existingOpp,
-                  attempts: newAttempts
-                };
-
-                const updatedAttemptsMap = { ...(prev.attempts || {}) };
-                updatedAttemptsMap[oppId] = newAttempts;
 
                 return {
                   ...prev,
-                  players: updatedPlayers,
-                  attempts: updatedAttemptsMap
+                  players: updatedPlayers
                 };
               });
             } else if (data.type === 'guess_rejected') {
@@ -1874,6 +1903,11 @@ export default function App() {
             } else if (data.type === 'match_end' || data.type === 'GAME_OVER' || data.action === 'GAME_OVER') {
               console.log('[WebSocket Manager] GAME_OVER / Match END received:', data);
               setIsValidating(false);
+
+              if (!hasEnteredGameRef.current || !activeMatchRef.current) {
+                console.warn('[WebSocket] Discarded GAME_OVER because user is on home screen');
+                return;
+              }
 
               // Filter out stale messages from past matches
               const eventMatchId = data.matchId || data.id;
@@ -1896,8 +1930,24 @@ export default function App() {
 
               handleInstantMatchEndRef.current(serverWinnerUserId, data);
             } else if (data.type === 'opponent_left') {
+              if (!hasEnteredGameRef.current || !activeMatchRef.current) {
+                console.warn('[WebSocket] Discarded opponent_left because user is on home screen');
+                return;
+              }
               setOpponentLeftDuringMatch(true);
-              showToast('Rakip oyundan ayrıldı.', 'info');
+              const selfId = auth.currentUser?.uid || profile.id;
+              const winnerId = data.winner || data.winnerUserId || data.winnerId || selfId;
+              showToast('Rakip oyundan ayrıldı! Zafer senin!', 'success');
+              handleInstantMatchEndRef.current(winnerId, {
+                ...data,
+                winner: winnerId,
+                winnerUserId: winnerId,
+                winnerId: winnerId,
+                winReason: 'opponent_left',
+                isGameOver: true,
+                status: 'finished',
+                gameState: 'finished'
+              });
             } else if (data.type === 'challenge_received') {
               if (data.challenge) {
                 setActiveChallenges((prev) => {
@@ -2110,14 +2160,37 @@ export default function App() {
 
   // Instant/synchronous duel completion handler based on Firestore real-time snapshot or WebSocket
   const handleInstantMatchEnd = useCallback((winnerId: string, matchData?: any) => {
+    if (!hasEnteredGameRef.current || !activeMatchRef.current) {
+      console.log('[handleInstantMatchEnd] Ignored match end trigger because user is on home screen');
+      return;
+    }
+
     const currentMatchId = matchData?.id || matchData?.matchId || activeMatch?.id || activeMatch?.matchId || 'active_match_session';
     if (handledMatchEndIdsRef.current.has(currentMatchId)) {
       return; // Already processed match end for this match ID! Prevent repeating audio / toast / score loop.
     }
     handledMatchEndIdsRef.current.add(currentMatchId);
 
-    // Unconditionally allow immediate matchmaking re-entry
+    // Force navigation to game result screen and close all modals regardless of current screen
+    setHasEnteredGame(true);
+    setShowLobbyModal(false);
+    setShowMissionsModal(false);
+    setShowSettingsModal(false);
+    setShowStatsModal(false);
+    setShowCongratsModal(false);
+    setMatchmakingStatus('idle');
     setIsMatchmakingLocked(false);
+
+    // Call Native Android Bridge if present
+    if (typeof window !== 'undefined' && (window as any).AndroidBridge) {
+      try {
+        if ((window as any).AndroidBridge.redirectToResultActivity) {
+          (window as any).AndroidBridge.redirectToResultActivity();
+        }
+      } catch (e) {
+        console.error("Error calling redirectToResultActivity via AndroidBridge:", e);
+      }
+    }
 
     // Force clear any active timers/intervals immediately to prevent ticking, flashing, or layout changes
     if (timerRef.current) {
@@ -2395,27 +2468,47 @@ export default function App() {
   // Helper function to inspect match/room document and trigger immediate match end on victory/defeat
   const checkAndTriggerMatchEnd = useCallback((matchData: any) => {
     if (!matchData) return false;
+    if (!hasEnteredGameRef.current || !activeMatchRef.current) return false;
 
     const matchIdKey = matchData.id || matchData.matchId || activeMatchRef.current?.id || activeMatchRef.current?.matchId;
     if (matchIdKey && handledMatchEndIdsRef.current.has(matchIdKey)) {
       return true; // Match end was already processed for this match
     }
 
-    const serverWinnerUserId = String(
-      matchData.winnerUserId || matchData.winnerId || matchData.winner || ''
+    let serverWinnerUserId = String(
+      matchData.winnerUserId || matchData.winnerId || matchData.winner || matchData.finishedBy || ''
     ).trim();
 
-    const isFinished = (matchData.isGameOver === true || 
-                        matchData.gameOver === true ||
-                        matchData.status === 'finished' || 
-                        matchData.status === 'ended' ||
-                        matchData.gameState === 'finished' ||
-                        matchData.gameState === 'FINISHED') &&
-                       serverWinnerUserId !== '';
+    if (!serverWinnerUserId && matchData.players) {
+      Object.entries(matchData.players).forEach(([pId, pData]: [string, any]) => {
+        if (pData?.won === true || pData?.isWinner === true) {
+          serverWinnerUserId = pId;
+        }
+      });
+    }
+
+    if (!serverWinnerUserId && matchData.winReason === 'opponent_left') {
+      serverWinnerUserId = auth.currentUser?.uid || profile.id;
+    }
+
+    const isFinished = 
+      matchData.isGameOver === true || 
+      matchData.gameOver === true ||
+      matchData.status === 'finished' || 
+      matchData.status === 'ended' ||
+      matchData.status === 'completed' ||
+      matchData.gameState === 'finished' ||
+      matchData.gameState === 'FINISHED' ||
+      matchData.gameState === 'RESULT' ||
+      serverWinnerUserId !== '';
 
     if (isFinished) {
-      console.log(`[Real-time Match Sync] Server match end confirmed! Winner: ${serverWinnerUserId}`);
-      handleInstantMatchEndRef.current(serverWinnerUserId, matchData);
+      if (matchData.winReason === 'opponent_left') {
+        setOpponentLeftDuringMatch(true);
+      }
+      const finalWinner = serverWinnerUserId || 'draw';
+      console.log(`[Real-time Match Sync] Server match end confirmed! Winner: ${finalWinner}`);
+      handleInstantMatchEndRef.current(finalWinner, matchData);
       return true;
     }
     return false;
@@ -2438,6 +2531,7 @@ export default function App() {
     
     const processRoomSnapshotData = (data: any) => {
       if (!data) return;
+      if (!hasEnteredGameRef.current || !activeMatchRef.current) return;
 
       setActiveMatch((prev: any) => {
         const base = prev || {
@@ -2529,8 +2623,9 @@ export default function App() {
     });
 
     matchUnsubscribeRef.current = () => {
-      unsubMatch();
-      unsubRoom();
+      try { unsubMatch(); } catch (e) {}
+      try { unsubRoom(); } catch (e) {}
+      clearInterval(pollInterval);
     };
 
     // Fast polling fallback (every 800ms) across REST API & Firestore for mobile WebViews / APKs where streams can pause
@@ -2574,6 +2669,10 @@ export default function App() {
 
   const handleLeaveMatchToMenu = useCallback(async () => {
     console.log('Centralized cleanup: returning to main menu');
+    hasEnteredGameRef.current = false;
+    activeMatchRef.current = null;
+    isMatchEndedRef.current = false;
+
     if (activeMatch) {
       const matchId = activeMatch.matchId || activeMatch.id;
       const opponentPlayer = Object.values(activeMatch.players || {}).find((p: any) => p?.id !== profile.id) as any;
@@ -2595,9 +2694,18 @@ export default function App() {
     }
 
     if (matchUnsubscribeRef.current) {
-      matchUnsubscribeRef.current();
+      try { matchUnsubscribeRef.current(); } catch (e) {}
       matchUnsubscribeRef.current = null;
     }
+    if (queueUnsubscribeRef.current) {
+      try { queueUnsubscribeRef.current(); } catch (e) {}
+      queueUnsubscribeRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     handledMatchEndIdsRef.current.clear();
     setHasEnteredGame(false);
     setIsDailyPuzzle(false);
@@ -2614,6 +2722,8 @@ export default function App() {
     setIsMatchmakingLocked(false);
     setOpponentLeftDuringMatch(false);
     pendingMatchmakingRef.current = null;
+    setSelfCurrentAttemptCount(0);
+    setOppCurrentAttemptCount(0);
 
     // WebSocket cleanup and reconnection block
     if (socketRef.current) {
@@ -3017,26 +3127,137 @@ export default function App() {
         }
 
         if (hasWon) {
-          showToast(`Tebrikler! Kelimeyi doğru bildiniz! Sonuç bekleniyor... 🎉`, 'success');
           playEnterSound(settings.soundEnabled);
           
           if (timerRef.current) {
             clearInterval(timerRef.current);
             timerRef.current = null;
           }
-          setGameStatus('idle'); // Lock inputs, await server authoritative GAME_OVER / match_end packet
 
-          syncMatchState(updatedAttempts, updatedAttempts.length, true, true, scoreAwarded, Date.now());
+          const currentAuthUid = auth.currentUser?.uid || profile.id;
+          const matchId = activeMatch.matchId || activeMatch.id;
+          const oppEntry = Object.values(activeMatch.players || {}).find((p: any) => p && p.id !== currentAuthUid) as any;
+          const oppId = oppEntry?.id || (activeMatch.player1?.id !== currentAuthUid ? activeMatch.player1?.id : activeMatch.player2?.id) || 'opponent';
+
+          const winMatchData = {
+            id: matchId,
+            matchId: matchId,
+            isGameOver: true,
+            gameOver: true,
+            status: 'finished',
+            gameState: 'finished',
+            winner: currentAuthUid,
+            winnerId: currentAuthUid,
+            winnerUserId: currentAuthUid,
+            finishedBy: currentAuthUid,
+            loser: oppId,
+            loserUserId: oppId,
+            winReason: 'correct_word',
+            correctWord: targetWord,
+            targetWord: targetWord,
+            attempts: {
+              ...(activeMatch.attempts || {}),
+              [currentAuthUid]: updatedAttempts
+            },
+            players: {
+              ...(activeMatch.players || {}),
+              [currentAuthUid]: {
+                ...(activeMatch.players?.[currentAuthUid] || {}),
+                id: currentAuthUid,
+                name: profile.name || 'Sen',
+                attempts: updatedAttempts,
+                attemptsCount: updatedAttempts.length,
+                completed: true,
+                won: true
+              },
+              [oppId]: {
+                ...(activeMatch.players?.[oppId] || {}),
+                id: oppId,
+                completed: true,
+                won: false
+              }
+            }
+          };
+
+          if (matchId) {
+            const matchRef = doc(db, 'matches', matchId);
+            const roomRef = doc(db, 'rooms', matchId);
+            setDoc(matchRef, winMatchData, { merge: true }).catch(err => console.warn('Non-blocking Firestore update error:', err));
+            setDoc(roomRef, winMatchData, { merge: true }).catch(() => {});
+          }
+
+          if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              type: 'submit_guess',
+              matchId: matchId,
+              guess: currentAttempt,
+              word: currentAttempt,
+              attempts: updatedAttempts,
+              won: true,
+              completed: true,
+              hasWon: true
+            }));
+          }
+
+          handleInstantMatchEndRef.current(currentAuthUid, winMatchData);
         } else if (updatedAttempts.length >= 6) {
-          showToast(`6 tahmin hakkınız tükendi! Diğer oyuncunun tamamlaması bekleniyor... Doğru kelime: ${targetWord}`, 'info');
-          playDefeatSound(settings.soundEnabled);
-          
+          const currentAuthUid = auth.currentUser?.uid || profile.id;
+          const matchId = activeMatch.matchId || activeMatch.id;
+          const oppEntry = Object.values(activeMatch.players || {}).find((p: any) => p && p.id !== currentAuthUid) as any;
+          const oppId = oppEntry?.id || 'opponent';
+          const oppCompleted = activeMatch.players?.[oppId]?.completed;
+          const oppWon = activeMatch.players?.[oppId]?.won;
+
           if (timerRef.current) {
             clearInterval(timerRef.current);
             timerRef.current = null;
           }
-          setGameStatus('idle'); // Wait for server state sync (match_round_start or match_end)
-          syncMatchState(updatedAttempts, updatedAttempts.length, true, false, 0);
+
+          if (oppWon) {
+            const finishData = {
+              id: matchId,
+              matchId: matchId,
+              isGameOver: true,
+              gameOver: true,
+              status: 'finished',
+              gameState: 'finished',
+              winner: oppId,
+              winnerId: oppId,
+              winnerUserId: oppId,
+              loser: currentAuthUid,
+              winReason: 'correct_word',
+              correctWord: targetWord
+            };
+            if (matchId) {
+              setDoc(doc(db, 'matches', matchId), finishData, { merge: true }).catch(() => {});
+              setDoc(doc(db, 'rooms', matchId), finishData, { merge: true }).catch(() => {});
+            }
+            handleInstantMatchEndRef.current(oppId, finishData);
+          } else if (oppCompleted) {
+            const finishData = {
+              id: matchId,
+              matchId: matchId,
+              isGameOver: true,
+              gameOver: true,
+              status: 'finished',
+              gameState: 'finished',
+              winner: 'draw',
+              winnerId: 'draw',
+              winnerUserId: 'draw',
+              winReason: 'max_attempts',
+              correctWord: targetWord
+            };
+            if (matchId) {
+              setDoc(doc(db, 'matches', matchId), finishData, { merge: true }).catch(() => {});
+              setDoc(doc(db, 'rooms', matchId), finishData, { merge: true }).catch(() => {});
+            }
+            handleInstantMatchEndRef.current('draw', finishData);
+          } else {
+            showToast(`6 tahmin hakkınız tükendi! Diğer oyuncunun tamamlaması bekleniyor... Doğru kelime: ${targetWord}`, 'info');
+            playDefeatSound(settings.soundEnabled);
+            setGameStatus('idle');
+            syncMatchState(updatedAttempts, updatedAttempts.length, true, false, 0);
+          }
         } else {
           playEnterSound(settings.soundEnabled);
           syncMatchState(updatedAttempts, updatedAttempts.length, false, false, 0);
@@ -4401,7 +4622,7 @@ export default function App() {
 
                     {/* Attempt Tracker Dots & Label */}
                     <ProgressDots
-                      currentAttemptCount={oppCurrentAttemptCount}
+                      currentAttemptCount={Math.max(oppCurrentAttemptCount, oppAttemptCount)}
                       isCompleted={oppCompleted}
                       isWon={oppState.won}
                       colorScheme="amber"

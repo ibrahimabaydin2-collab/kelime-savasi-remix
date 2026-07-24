@@ -38,6 +38,20 @@ html, body, #root {
 }
 
 /* Landscape orientation results layout adjustment for #game-area-card */
+@media (max-width: 768px) {
+  #game-area-card {
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  body:has(#bottom-ad-placeholder) #game-area-card {
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .android-hybrid #game-area-card {
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px)) !important;
+  }
+}
+
 @media (orientation: landscape) {
   #game-area-card.game-ended {
     justify-content: center !important;
