@@ -5,6 +5,10 @@ service cloud.firestore {
     match /users/{userId} {
       allow read, list, write, create, update, delete: if true;
     }
+
+    match /friend_requests/{requestId} {
+      allow read, list, write, create, update, delete: if true;
+    }
     
     match /rooms/{roomId} {
       allow read, write, create, update, delete: if true;

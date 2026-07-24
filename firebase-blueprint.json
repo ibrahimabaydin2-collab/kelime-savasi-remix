@@ -8,6 +8,7 @@
         "id": { "type": "string" },
         "name": { "type": "string" },
         "avatarUrl": { "type": "string" },
+        "friends": { "type": "array" },
         "stats": { "type": "object" },
         "wordLengthStats": { "type": "object" }
       },
@@ -87,12 +88,32 @@
         "winner": { "type": "string" }
       },
       "required": ["id", "isGameOver"]
+    },
+    "FriendRequest": {
+      "title": "FriendRequest",
+      "description": "A friend request document sent between two users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fromUid": { "type": "string" },
+        "toUid": { "type": "string" },
+        "fromName": { "type": "string" },
+        "toName": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["id", "fromUid", "toUid", "status"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "User profiles"
+    },
+    "/friend_requests/{requestId}": {
+      "schema": "FriendRequest",
+      "description": "Friend requests sent between players"
     },
     "/rooms/{roomId}": {
       "schema": "Room",

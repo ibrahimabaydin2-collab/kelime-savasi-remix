@@ -29,7 +29,8 @@ import {
   YAxis, 
   Tooltip, 
   Cell, 
-  CartesianGrid 
+  CartesianGrid,
+  LabelList 
 } from 'recharts';
 import { UserProfile, Badge, DailyMission } from '../types';
 import { getBaseUrl } from '../utils/api.js';
@@ -93,15 +94,57 @@ export default function StatsModal({
   // Completed missions count
   const completedMissionsCount = profile.missions.filter(m => m.completed).length;
 
-  // Mapping word length stats to chart format
-  const wordLengthData = [
-    { name: '3 Harf', 'Başarı': profile.wordLengthStats?.['3'] || 0 },
-    { name: '4 Harf', 'Başarı': profile.wordLengthStats?.['4'] || 0 },
-    { name: '5 Harf', 'Başarı': profile.wordLengthStats?.['5'] || 0 },
-    { name: '6 Harf', 'Başarı': profile.wordLengthStats?.['6'] || 0 },
-    { name: '7 Harf', 'Başarı': profile.wordLengthStats?.['7'] || 0 },
-    { name: '8 Harf', 'Başarı': profile.wordLengthStats?.['8'] || 0 },
-  ];
+  // Word length stats calculation
+  const totalWordLengthWins = [3, 4, 5, 6, 7, 8].reduce((acc, len) => {
+    return acc + (profile.wordLengthStats?.[String(len)] || 0);
+  }, 0);
+
+  let bestWordLength = '5';
+  let maxWinsForLength = -1;
+  [3, 4, 5, 6, 7, 8].forEach((len) => {
+    const wins = profile.wordLengthStats?.[String(len)] || 0;
+    if (wins > maxWinsForLength) {
+      maxWinsForLength = wins;
+      bestWordLength = String(len);
+    }
+  });
+
+  const wordLengthColors = ['#FCD34D', '#FBBF24', '#F59E0B', '#D97706', '#B45309', '#92400E'];
+
+  const wordLengthData = [3, 4, 5, 6, 7, 8].map((len, index) => {
+    const wins = profile.wordLengthStats?.[String(len)] || 0;
+    const percentage = totalWordLengthWins > 0 ? Math.round((wins / totalWordLengthWins) * 100) : 0;
+    return {
+      name: `${len} Harf`,
+      rawLength: len,
+      'Galibiyet': wins,
+      percentage,
+      fill: wordLengthColors[index]
+    };
+  });
+
+  const CustomWordLengthTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload;
+      return (
+        <div className="bg-[#101520] border border-amber-500/40 p-2.5 rounded-xl shadow-2xl text-white text-xs space-y-1">
+          <p className="font-extrabold text-amber-300 flex items-center gap-1.5 border-b border-white/10 pb-1">
+            <Target size={13} className="text-amber-400" />
+            {data.rawLength} Harfli Kelimeler
+          </p>
+          <div className="flex justify-between items-center gap-4 text-xs font-mono pt-1">
+            <span className="text-gray-300">Kazanılan Oyun:</span>
+            <span className="font-black text-amber-400">{data['Galibiyet']}</span>
+          </div>
+          <div className="flex justify-between items-center gap-4 text-[10.5px] font-mono text-gray-400">
+            <span>Galibiyet Payı:</span>
+            <span className="font-bold text-amber-200 font-mono">%{data.percentage}</span>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
 
   const handleShare = () => {
     const baseUrl = getBaseUrl();
@@ -288,20 +331,38 @@ Sen de bana meydan oku! 🚀 ${shareLink}`;
                 </div>
               </div>
 
-              {/* Word Length Success Bar Chart */}
-              <div className="bg-[#3D4756]/15 p-4 rounded-2xl border border-white/5">
-                <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3 font-mono flex items-center justify-between">
-                  <span>Kelime Uzunluğu Başarısı</span>
-                  <span className="text-[10px] text-amber-400 font-normal normal-case">Doğru Kelime Sayısı</span>
-                </h3>
-                <div className="h-40 w-full">
+              {/* Word Length Success Bar Chart Section */}
+              <div className="bg-[#101520] p-4 rounded-2xl border border-amber-500/20 space-y-3 shadow-lg">
+                <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                  <div>
+                    <h3 className="text-xs font-black text-[#FAF6E9] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <BarChart2 size={15} className="text-amber-400" />
+                      Harf Sayısına Göre Galibiyetler
+                    </h3>
+                    <p className="text-[10px] text-gray-400 mt-0.5">
+                      Hangi harf uzunluğunda kaç kelime bildiğinizi gösterir
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-black text-amber-400 font-mono block">
+                      {totalWordLengthWins} Galibiyet
+                    </span>
+                    <span className="text-[9px] text-gray-400 uppercase font-mono block">
+                      En İyi: {bestWordLength} Harf ({maxWinsForLength > 0 ? maxWinsForLength : 0})
+                    </span>
+                  </div>
+                </div>
+
+                {/* Recharts Column Chart */}
+                <div className="h-48 w-full pt-2">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={wordLengthData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#3E485A" opacity={0.2} vertical={false} />
+                    <BarChart data={wordLengthData} margin={{ top: 18, right: 10, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#3E485A" opacity={0.25} vertical={false} />
                       <XAxis 
                         dataKey="name" 
                         stroke="#9CA3AF" 
-                        fontSize={10} 
+                        fontSize={11} 
+                        fontWeight="bold"
                         tickLine={false}
                         axisLine={false}
                       />
@@ -312,33 +373,43 @@ Sen de bana meydan oku! 🚀 ${shareLink}`;
                         axisLine={false}
                         allowDecimals={false}
                       />
-                      <Tooltip
-                        contentStyle={{ 
-                          backgroundColor: '#1E293B', 
-                          border: '1px solid rgba(255,255,255,0.1)', 
-                          borderRadius: '8px' 
-                        }}
-                        labelStyle={{ color: '#F3F4F6', fontWeight: 'bold', fontSize: '11px' }}
-                        itemStyle={{ color: '#FBBF24', fontSize: '11px' }}
-                        cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
-                      />
-                      <Bar dataKey="Başarı" radius={[4, 4, 0, 0]}>
+                      <Tooltip content={<CustomWordLengthTooltip />} cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }} />
+                      <Bar dataKey="Galibiyet" radius={[6, 6, 0, 0]}>
+                        <LabelList 
+                          dataKey="Galibiyet" 
+                          position="top" 
+                          fill="#FBBF24" 
+                          fontSize={10} 
+                          fontWeight="bold"
+                          formatter={(val: number) => (val > 0 ? val : '')}
+                        />
                         {wordLengthData.map((entry, index) => (
                           <Cell 
                             key={`cell-${index}`} 
-                            fill={
-                              index === 0 ? '#FBBF24' : // Amber
-                              index === 1 ? '#F59E0B' : // Dark Amber
-                              index === 2 ? '#D97706' : // Darker Amber
-                              index === 3 ? '#B45309' : // Orange-amber
-                              index === 4 ? '#92400E' : // Orange-brown
-                              '#78350F'                 // Deep amber
-                            } 
+                            fill={entry.fill} 
                           />
                         ))}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
+                </div>
+
+                {/* Detailed Grid Breakdown */}
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/5">
+                  {wordLengthData.map((item) => (
+                    <div key={item.rawLength} className="bg-[#161D2B] p-2 rounded-xl border border-white/5 flex flex-col justify-between space-y-1">
+                      <div className="flex items-center justify-between text-[10px] font-bold">
+                        <span className="text-gray-300 font-mono">{item.rawLength} Harf</span>
+                        <span className="text-amber-400 font-mono font-black">{item['Galibiyet']}</span>
+                      </div>
+                      <div className="w-full bg-black/40 h-1.5 rounded-full overflow-hidden">
+                        <div 
+                          style={{ width: `${item.percentage}%` }}
+                          className="h-full bg-gradient-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-300"
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 

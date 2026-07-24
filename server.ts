@@ -892,9 +892,14 @@ async function startServer() {
           sendWs(sender.ws, { type: 'guess_result', matchId: targetMatchId, word: guessWord, feedback, isCorrect: true, isGameOver: true });
           const endPayload = {
             type: 'match_end',
+            action: 'GAME_OVER',
             matchId: targetMatchId,
             gameState: 'FINISHED',
+            winnerUserId: sender.id,
+            winnerId: sender.id,
             winner: sender.id,
+            loserUserId: opponent.id,
+            loserId: opponent.id,
             loser: opponent.id,
             winnerName: sender.name,
             loserName: opponent.name,
@@ -1007,9 +1012,14 @@ async function startServer() {
       // Notify remaining player
       sendWs(remainingPlayer.ws, {
         type: 'match_end',
+        action: 'GAME_OVER',
         matchId: match.matchId,
         gameState: 'FINISHED',
+        winnerUserId: remainingPlayer.id,
+        winnerId: remainingPlayer.id,
         winner: remainingPlayer.id,
+        loserUserId: leftPlayer.id,
+        loserId: leftPlayer.id,
         loser: leftPlayer.id,
         winnerName: remainingPlayer.name,
         loserName: leftPlayer.name,
@@ -1263,9 +1273,14 @@ async function startServer() {
             // Send match end event to BOTH players simultaneously
             const endPayload = {
               type: 'match_end',
+              action: 'GAME_OVER',
               matchId: match.matchId,
               gameState: 'FINISHED',
+              winnerUserId: sender.id,
+              winnerId: sender.id,
               winner: sender.id,
+              loserUserId: opponent.id,
+              loserId: opponent.id,
               loser: opponent.id,
               winnerName: sender.name,
               loserName: opponent.name,
@@ -1331,8 +1346,11 @@ async function startServer() {
 
               const endPayload = {
                 type: 'match_end',
+                action: 'GAME_OVER',
                 matchId: match.matchId,
                 gameState: 'FINISHED',
+                winnerUserId: 'draw',
+                winnerId: 'draw',
                 winner: 'draw',
                 winReason: 'max_attempts',
                 correctWord: match.correctWord,

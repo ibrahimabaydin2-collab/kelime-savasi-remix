@@ -37,10 +37,12 @@ import {
   limit,
   getDocFromServer,
   updateDoc,
+  arrayUnion,
+  arrayRemove,
   setLogLevel
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { UserProfile } from '../types.js';
+import { UserProfile, FriendRequest } from '../types.js';
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
@@ -376,11 +378,26 @@ export function matchesSearchTerm(userName: string, searchTerm: string): boolean
  */
 export async function saveUserProfileToFirestore(profile: UserProfile): Promise<void> {
   try {
-    // Update browser local storage immediately FIRST so client-side state is always perfectly synchronized even offline/on mobile APK
+    let effectiveProfile = { ...profile };
+
+    // Normalize profile ID to auth.currentUser.uid if logged in
+    if (auth.currentUser && auth.currentUser.uid) {
+      if (effectiveProfile.id !== auth.currentUser.uid) {
+        console.log(`Normalizing profile ID from ${effectiveProfile.id} to authenticated UID ${auth.currentUser.uid}`);
+        effectiveProfile.id = auth.currentUser.uid;
+      }
+    }
+
+    if (!effectiveProfile.id) {
+      console.warn('Cannot save profile without an ID');
+      return;
+    }
+
+    // Update browser local storage immediately FIRST so client-side state is always perfectly synchronized
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem('kelimesavasi_profile', JSON.stringify(profile));
-        const resolvedName = profile.name || (profile as any).username || (profile as any).displayName;
+        window.localStorage.setItem('kelimesavasi_profile', JSON.stringify(effectiveProfile));
+        const resolvedName = effectiveProfile.name || (effectiveProfile as any).username || (effectiveProfile as any).displayName;
         if (resolvedName) {
           window.localStorage.setItem('saved_username', resolvedName.trim());
         }
@@ -389,23 +406,19 @@ export async function saveUserProfileToFirestore(profile: UserProfile): Promise<
       console.warn('LocalStorage save error in saveUserProfileToFirestore:', lsErr);
     }
 
-    if (auth.currentUser && profile.id !== auth.currentUser.uid) {
-      console.warn(`Skipping saveUserProfileToFirestore for profile ID ${profile.id} because it is different from currently authenticated user UID ${auth.currentUser.uid}`);
-      return;
-    }
-
-    const userDocRef = doc(db, 'users', profile.id);
+    const userDocRef = doc(db, 'users', effectiveProfile.id);
     
-    const cleanName = (profile.name || (profile as any).username || (profile as any).displayName || '').trim();
+    const cleanName = (effectiveProfile.name || (effectiveProfile as any).username || (effectiveProfile as any).displayName || '').trim();
     const termLower = cleanName.toLowerCase();
     const termLowerTr = cleanName.toLocaleLowerCase('tr-TR');
     const termClean = turkishToEnglishFriendly(cleanName);
 
     const dataToSave = {
-      ...profile,
+      ...effectiveProfile,
+      friends: Array.isArray(effectiveProfile.friends) ? effectiveProfile.friends : [],
       name: cleanName,
-      username: (profile as any).username || cleanName,
-      displayName: (profile as any).displayName || cleanName,
+      username: (effectiveProfile as any).username || cleanName,
+      displayName: (effectiveProfile as any).displayName || cleanName,
       name_lowercase: termLower,
       name_lowercase_tr: termLowerTr,
       name_clean: termClean,
@@ -418,7 +431,7 @@ export async function saveUserProfileToFirestore(profile: UserProfile): Promise<
 
     // We await setDoc so we are 100% sure the write is committed to local cache/network
     await setDoc(userDocRef, dataToSave, { merge: true });
-    console.log(`Successfully saved user profile to Firestore for UID ${profile.id} (${cleanName})`);
+    console.log(`Successfully saved user profile to Firestore for UID ${effectiveProfile.id} (${cleanName})`);
   } catch (error) {
     console.error('Failed to save user profile:', error);
     handleFirestoreError(error, OperationType.WRITE, `users/${profile.id}`);
@@ -521,12 +534,294 @@ export async function fetchUsersWhoAddedMe(uid: string): Promise<UserProfile[]> 
     const querySnapshot = await getDocs(q);
     const results: UserProfile[] = [];
     querySnapshot.forEach((docSnap) => {
-      results.push(docSnap.data() as UserProfile);
+      const data = docSnap.data() as UserProfile;
+      results.push({ ...data, id: data.id || docSnap.id });
     });
     return results;
   } catch (error) {
     console.error('Failed to fetch users who added me:', error);
     return [];
+  }
+}
+
+/**
+ * Fetches user profiles for a list of UIDs
+ */
+export async function fetchProfilesByIds(uids: string[]): Promise<UserProfile[]> {
+  if (!uids || uids.length === 0) return [];
+  try {
+    const uniqueIds = Array.from(new Set(uids)).filter(Boolean);
+    const promises = uniqueIds.map(async (uid) => {
+      try {
+        const userDocRef = doc(db, 'users', uid);
+        const userSnap = await getDoc(userDocRef);
+        if (userSnap.exists()) {
+          const data = userSnap.data() as UserProfile;
+          return { ...data, id: data.id || userSnap.id };
+        }
+      } catch (e) {
+        console.warn(`Failed to fetch profile for friend ID ${uid}:`, e);
+      }
+      return null;
+    });
+    const results = await Promise.all(promises);
+    return results.filter((p): p is UserProfile => p !== null);
+  } catch (error) {
+    console.error('Failed to fetch profiles by ids:', error);
+    return [];
+  }
+}
+
+/**
+ * Sends a friend request to a target user in Firestore and updates sender's friends array
+ */
+export async function sendFriendRequestInFirestore(
+  fromUser: UserProfile,
+  toUserId: string,
+  toName?: string
+): Promise<void> {
+  if (!fromUser?.id || !toUserId || fromUser.id === toUserId) return;
+  try {
+    const reqId = `${fromUser.id}_${toUserId}`;
+    const reqRef = doc(db, 'friend_requests', reqId);
+
+    // Check if reverse request exists (toUserId sent request to fromUser)
+    const reverseReqId = `${toUserId}_${fromUser.id}`;
+    const reverseSnap = await getDoc(doc(db, 'friend_requests', reverseReqId));
+    if (reverseSnap.exists()) {
+      const revData = reverseSnap.data() as FriendRequest;
+      if (revData.status === 'pending') {
+        // Mutual request -> auto accept!
+        await acceptFriendRequestInFirestore(fromUser.id, toUserId);
+        return;
+      }
+    }
+
+    const now = Date.now();
+    const reqData: FriendRequest = {
+      id: reqId,
+      fromUid: fromUser.id,
+      toUid: toUserId,
+      fromName: fromUser.name || 'Oyuncu',
+      toName: toName || 'Oyuncu',
+      fromAvatarUrl: fromUser.avatarUrl || '🧠',
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now
+    };
+
+    await setDoc(reqRef, reqData, { merge: true });
+
+    // Update sender's friends array in Firestore
+    const fromUserRef = doc(db, 'users', fromUser.id);
+    await updateDoc(fromUserRef, {
+      friends: arrayUnion(toUserId)
+    }).catch(async () => {
+      await setDoc(fromUserRef, { friends: [toUserId] }, { merge: true });
+    });
+  } catch (error) {
+    console.error('Failed to send friend request in Firestore:', error);
+    throw error;
+  }
+}
+
+/**
+ * Accepts a friend request in Firestore and synchronizes friends array on both user documents
+ */
+export async function acceptFriendRequestInFirestore(
+  currentUserId: string,
+  targetUserId: string
+): Promise<void> {
+  if (!currentUserId || !targetUserId || currentUserId === targetUserId) return;
+  try {
+    const reqId1 = `${targetUserId}_${currentUserId}`;
+    const reqId2 = `${currentUserId}_${targetUserId}`;
+    const ref1 = doc(db, 'friend_requests', reqId1);
+    const ref2 = doc(db, 'friend_requests', reqId2);
+
+    const [snap1, snap2] = await Promise.all([getDoc(ref1), getDoc(ref2)]);
+    const now = Date.now();
+
+    if (snap1.exists()) {
+      await updateDoc(ref1, { status: 'accepted', updatedAt: now });
+    } else if (snap2.exists()) {
+      await updateDoc(ref2, { status: 'accepted', updatedAt: now });
+    } else {
+      await setDoc(ref1, {
+        id: reqId1,
+        fromUid: targetUserId,
+        toUid: currentUserId,
+        fromName: 'Oyuncu',
+        toName: 'Oyuncu',
+        status: 'accepted',
+        createdAt: now,
+        updatedAt: now
+      }, { merge: true });
+    }
+
+    // Add each other to friends array on both user docs in Firestore
+    const user1Ref = doc(db, 'users', currentUserId);
+    const user2Ref = doc(db, 'users', targetUserId);
+
+    await Promise.all([
+      updateDoc(user1Ref, { friends: arrayUnion(targetUserId) }).catch(async () => {
+        await setDoc(user1Ref, { friends: [targetUserId] }, { merge: true });
+      }),
+      updateDoc(user2Ref, { friends: arrayUnion(currentUserId) }).catch(async () => {
+        await setDoc(user2Ref, { friends: [currentUserId] }, { merge: true });
+      })
+    ]);
+  } catch (error) {
+    console.error('Failed to accept friend request in Firestore:', error);
+    throw error;
+  }
+}
+
+/**
+ * Removes a friend or rejects a request in Firestore and updates both user documents
+ */
+export async function removeFriendInFirestore(
+  currentUserId: string,
+  targetUserId: string
+): Promise<void> {
+  if (!currentUserId || !targetUserId) return;
+  try {
+    const reqId1 = `${targetUserId}_${currentUserId}`;
+    const reqId2 = `${currentUserId}_${targetUserId}`;
+    const ref1 = doc(db, 'friend_requests', reqId1);
+    const ref2 = doc(db, 'friend_requests', reqId2);
+
+    const [snap1, snap2] = await Promise.all([getDoc(ref1), getDoc(ref2)]);
+    const now = Date.now();
+
+    if (snap1.exists()) {
+      await updateDoc(ref1, { status: 'rejected', updatedAt: now });
+    }
+    if (snap2.exists()) {
+      await updateDoc(ref2, { status: 'rejected', updatedAt: now });
+    }
+
+    const user1Ref = doc(db, 'users', currentUserId);
+    const user2Ref = doc(db, 'users', targetUserId);
+
+    await Promise.all([
+      updateDoc(user1Ref, { friends: arrayRemove(targetUserId) }).catch(() => {}),
+      updateDoc(user2Ref, { friends: arrayRemove(currentUserId) }).catch(() => {})
+    ]);
+  } catch (error) {
+    console.error('Failed to remove friend in Firestore:', error);
+  }
+}
+
+/**
+ * Fetches friend requests, syncs accepted friends and returns confirmed & incoming profiles
+ */
+export async function fetchFriendRequestsAndSync(currentProfile: UserProfile): Promise<{
+  confirmedFriends: UserProfile[];
+  incomingRequests: UserProfile[];
+  updatedFriendsArray: string[];
+}> {
+  const myUid = currentProfile?.id;
+  if (!myUid) {
+    return { confirmedFriends: [], incomingRequests: [], updatedFriendsArray: [] };
+  }
+
+  try {
+    const requestsColl = collection(db, 'friend_requests');
+    const qIncoming = query(requestsColl, where('toUid', '==', myUid));
+    const qOutgoing = query(requestsColl, where('fromUid', '==', myUid));
+
+    const [snapIncoming, snapOutgoing, usersWhoAddedMe] = await Promise.all([
+      getDocs(qIncoming),
+      getDocs(qOutgoing),
+      fetchUsersWhoAddedMe(myUid)
+    ]);
+
+    const incomingDocs: FriendRequest[] = [];
+    snapIncoming.forEach(d => incomingDocs.push(d.data() as FriendRequest));
+
+    const outgoingDocs: FriendRequest[] = [];
+    snapOutgoing.forEach(d => outgoingDocs.push(d.data() as FriendRequest));
+
+    const acceptedFriendUids = new Set<string>(currentProfile.friends || []);
+    const pendingIncomingUids = new Set<string>();
+    const rejectedUids = new Set<string>();
+
+    incomingDocs.forEach(req => {
+      if (req.status === 'accepted') {
+        acceptedFriendUids.add(req.fromUid);
+      } else if (req.status === 'pending') {
+        if (!acceptedFriendUids.has(req.fromUid)) {
+          pendingIncomingUids.add(req.fromUid);
+        }
+      } else if (req.status === 'rejected') {
+        rejectedUids.add(req.fromUid);
+      }
+    });
+
+    outgoingDocs.forEach(req => {
+      if (req.status === 'accepted') {
+        acceptedFriendUids.add(req.toUid);
+      } else if (req.status === 'rejected') {
+        rejectedUids.add(req.toUid);
+      }
+    });
+
+    usersWhoAddedMe.forEach(u => {
+      if ((currentProfile.friends || []).includes(u.id)) {
+        acceptedFriendUids.add(u.id);
+      } else {
+        if (!rejectedUids.has(u.id) && !acceptedFriendUids.has(u.id)) {
+          pendingIncomingUids.add(u.id);
+        }
+      }
+    });
+
+    pendingIncomingUids.delete(myUid);
+    acceptedFriendUids.delete(myUid);
+
+    acceptedFriendUids.forEach(uid => pendingIncomingUids.delete(uid));
+
+    const allUidsToFetch = Array.from(new Set([...acceptedFriendUids, ...pendingIncomingUids]));
+    const fetchedProfiles = await fetchProfilesByIds(allUidsToFetch);
+    const profileMap = new Map<string, UserProfile>();
+    fetchedProfiles.forEach(p => { if (p && p.id) profileMap.set(p.id, p); });
+
+    const confirmedFriends: UserProfile[] = Array.from(acceptedFriendUids)
+      .map(id => profileMap.get(id))
+      .filter((p): p is UserProfile => p !== undefined);
+
+    const incomingRequests: UserProfile[] = Array.from(pendingIncomingUids)
+      .map(id => profileMap.get(id))
+      .filter((p): p is UserProfile => p !== undefined);
+
+    const updatedFriendsArray = Array.from(acceptedFriendUids);
+
+    const currentFriendsSet = new Set(currentProfile.friends || []);
+    let needsSave = false;
+    updatedFriendsArray.forEach(id => {
+      if (!currentFriendsSet.has(id)) needsSave = true;
+    });
+
+    if (needsSave) {
+      const userRef = doc(db, 'users', myUid);
+      await updateDoc(userRef, { friends: updatedFriendsArray }).catch(() => {});
+    }
+
+    return {
+      confirmedFriends,
+      incomingRequests,
+      updatedFriendsArray
+    };
+  } catch (error) {
+    console.error('Error in fetchFriendRequestsAndSync:', error);
+    const myFriendsIds = currentProfile.friends || [];
+    const myFriendsProfiles = await fetchProfilesByIds(myFriendsIds);
+    return {
+      confirmedFriends: myFriendsProfiles,
+      incomingRequests: [],
+      updatedFriendsArray: myFriendsIds
+    };
   }
 }
 

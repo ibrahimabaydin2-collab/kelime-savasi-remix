@@ -22,6 +22,7 @@ import GoldWallet from './components/GoldWallet.js';
 import SettingsModal, { AppSettings } from './components/SettingsModal.js';
 import AuthScreen from './components/AuthScreen.js';
 import BadgeUnlockedModal from './components/BadgeUnlockedModal.js';
+import ProgressDots from './components/ProgressDots.js';
 import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase.js';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types.js';
@@ -45,6 +46,7 @@ export const ensureProfileFields = (p: UserProfile): UserProfile => {
   return {
     ...p,
     gold: p.gold !== undefined ? p.gold : 20,
+    friends: Array.isArray(p.friends) ? p.friends : [],
     lastDailyLoginClaim: p.lastDailyLoginClaim !== undefined ? p.lastDailyLoginClaim : '',
     wordLengthStats: p.wordLengthStats || {
       "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0
@@ -1180,6 +1182,55 @@ export default function App() {
   const [rematchRequested, setRematchRequested] = useState<boolean>(false);
   const [opponentRematchRequested, setOpponentRematchRequested] = useState<boolean>(false);
 
+  const [selfCurrentAttemptCount, setSelfCurrentAttemptCount] = useState<number>(0);
+  const [oppCurrentAttemptCount, setOppCurrentAttemptCount] = useState<number>(0);
+
+  // Read currentAttemptCount from Firestore's players object and pass to ProgressDots props
+  useEffect(() => {
+    if (!activeMatch || !activeMatch.players) {
+      setSelfCurrentAttemptCount(attempts.length);
+      setOppCurrentAttemptCount(0);
+      return;
+    }
+
+    const currentAuthUid = auth.currentUser?.uid || profile.id;
+    const selfKey = profile.id || currentAuthUid;
+
+    // Read currentAttemptCount from players object for self
+    const selfPlayerData = activeMatch.players[selfKey] || activeMatch.players[currentAuthUid] || {};
+    const selfCount =
+      typeof selfPlayerData.currentAttemptCount === 'number'
+        ? selfPlayerData.currentAttemptCount
+        : typeof selfPlayerData.attemptsCount === 'number'
+        ? selfPlayerData.attemptsCount
+        : Array.isArray(selfPlayerData.attempts)
+        ? selfPlayerData.attempts.length
+        : attempts.length;
+
+    setSelfCurrentAttemptCount(selfCount);
+
+    // Read currentAttemptCount from players object for opponent
+    const oppEntry = Object.entries(activeMatch.players).find(
+      ([id, p]: [string, any]) => id !== selfKey && id !== currentAuthUid && p && (p.id ? p.id !== selfKey : true)
+    );
+
+    if (oppEntry) {
+      const oppPlayerData: any = oppEntry[1] || {};
+      const oppCount =
+        typeof oppPlayerData.currentAttemptCount === 'number'
+          ? oppPlayerData.currentAttemptCount
+          : typeof oppPlayerData.attemptsCount === 'number'
+          ? oppPlayerData.attemptsCount
+          : Array.isArray(oppPlayerData.attempts)
+          ? oppPlayerData.attempts.length
+          : 0;
+
+      setOppCurrentAttemptCount(oppCount);
+    } else {
+      setOppCurrentAttemptCount(0);
+    }
+  }, [activeMatch?.players, attempts.length, profile.id]);
+
   const socketRef = useRef<WebSocket | null>(null);
   const wasOnlineRef = useRef<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1187,6 +1238,11 @@ export default function App() {
   const queueUnsubscribeRef = useRef<(() => void) | null>(null);
   const pendingMatchmakingRef = useRef<number | null>(null);
   const justLoggedInUidRef = useRef<string | null>(null);
+  const activeMatchRef = useRef(activeMatch);
+
+  useEffect(() => {
+    activeMatchRef.current = activeMatch;
+  }, [activeMatch]);
 
   const handleManualReconnect = () => {
     addNetworkLog('info', 'Manuel yeniden bağlanma tetiklendi.');
@@ -1815,21 +1871,30 @@ export default function App() {
             } else if (data.type === 'guess_rejected') {
               setIsValidating(false);
               console.warn('[Duel Server] Guess rejected:', data.reason);
-            } else if (data.type === 'match_end') {
-              console.log('[WebSocket Manager] Match END:', data);
+            } else if (data.type === 'match_end' || data.type === 'GAME_OVER' || data.action === 'GAME_OVER') {
+              console.log('[WebSocket Manager] GAME_OVER / Match END received:', data);
               setIsValidating(false);
-              const target = data.correctWord || activeMatch?.targetWord || activeMatch?.correctWord || targetWord || '';
+
+              // Filter out stale messages from past matches
+              const eventMatchId = data.matchId || data.id;
+              const currentMatchId = activeMatchRef.current?.id || activeMatchRef.current?.matchId;
+              if (eventMatchId && currentMatchId && eventMatchId !== currentMatchId) {
+                console.warn(`[WebSocket] Discarded GAME_OVER for old match ${eventMatchId} (active: ${currentMatchId})`);
+                return;
+              }
+
+              const target = data.correctWord || activeMatchRef.current?.targetWord || activeMatchRef.current?.correctWord || targetWord || '';
               if (target) {
                 setTargetWord(target);
               }
 
-              const winnerId = data.winner || data.winnerId;
+              const serverWinnerUserId = data.winnerUserId || data.winnerId || data.winner;
               const isOpponentLeft = data.winReason === 'opponent_left';
               if (isOpponentLeft) {
                 setOpponentLeftDuringMatch(true);
               }
 
-              handleInstantMatchEndRef.current(winnerId, data);
+              handleInstantMatchEndRef.current(serverWinnerUserId, data);
             } else if (data.type === 'opponent_left') {
               setOpponentLeftDuringMatch(true);
               showToast('Rakip oyundan ayrıldı.', 'info');
@@ -1940,19 +2005,6 @@ export default function App() {
       payload[`attempts.${profile.id}`] = updatedAttempts;
     }
 
-    if (won || completed) {
-      if (won) {
-        payload.won = true;
-        payload.gameOver = true;
-        payload.isGameOver = true;
-        payload.winner = currentUid;
-        payload.winnerId = currentUid;
-        payload.finishedBy = currentUid;
-        payload.status = 'finished';
-        payload.gameState = 'finished';
-      }
-    }
-
     const matchRef = doc(db, 'matches', matchId);
     const roomRef = doc(db, 'rooms', matchId);
 
@@ -2058,13 +2110,11 @@ export default function App() {
 
   // Instant/synchronous duel completion handler based on Firestore real-time snapshot or WebSocket
   const handleInstantMatchEnd = useCallback((winnerId: string, matchData?: any) => {
-    const currentMatchId = matchData?.id || matchData?.matchId || activeMatch?.id || activeMatch?.matchId;
-    if (currentMatchId) {
-      if (handledMatchEndIdsRef.current.has(currentMatchId)) {
-        return; // Already processed match end for this match ID! Prevent repeating audio / toast loop.
-      }
-      handledMatchEndIdsRef.current.add(currentMatchId);
+    const currentMatchId = matchData?.id || matchData?.matchId || activeMatch?.id || activeMatch?.matchId || 'active_match_session';
+    if (handledMatchEndIdsRef.current.has(currentMatchId)) {
+      return; // Already processed match end for this match ID! Prevent repeating audio / toast / score loop.
     }
+    handledMatchEndIdsRef.current.add(currentMatchId);
 
     // Unconditionally allow immediate matchmaking re-entry
     setIsMatchmakingLocked(false);
@@ -2085,8 +2135,21 @@ export default function App() {
     isMatchEndedRef.current = true;
     setGameStatus('idle');
 
+    const serverWinnerUserId = String(
+      winnerId || matchData?.winnerUserId || matchData?.winnerId || matchData?.winner || ''
+    ).trim();
+
+    const currentUserId = String(profile?.id || '').trim();
+    const currentAuthUid = String(auth.currentUser?.uid || '').trim();
+
+    const isSelfWinner = Boolean(
+      serverWinnerUserId &&
+      serverWinnerUserId !== 'draw' &&
+      ((currentUserId !== '' && serverWinnerUserId === currentUserId) ||
+       (currentAuthUid !== '' && serverWinnerUserId === currentAuthUid))
+    );
+
     setActiveMatch((prev) => {
-      const currentAuthUid = auth.currentUser?.uid;
       const selfId = currentAuthUid || profile.id;
       const oppId = matchData?.loser || matchData?.loserId || 'opponent';
 
@@ -2102,12 +2165,11 @@ export default function App() {
         }
       };
       
-      const finalWinnerId = winnerId || matchData?.winner || matchData?.winnerId || base.winner || base.winnerId;
       const updatedPlayers = { ...(base.players || {}), ...(matchData?.players || {}) };
       
       // Synchronize the final states of players
       Object.keys(updatedPlayers).forEach((pId) => {
-        const isThisWinner = pId === finalWinnerId;
+        const isThisWinner = pId === serverWinnerUserId;
         const playerCurrentAttempts = (pId === selfId && attempts.length > 0)
           ? attempts
           : (updatedPlayers[pId]?.attempts || matchData?.players?.[pId]?.attempts || matchData?.attempts?.[pId] || []);
@@ -2128,8 +2190,9 @@ export default function App() {
         status: 'ended',
         gameState: 'FINISHED',
         isGameOver: true,
-        winner: finalWinnerId,
-        winnerId: finalWinnerId,
+        winnerUserId: serverWinnerUserId,
+        winner: serverWinnerUserId,
+        winnerId: serverWinnerUserId,
         targetWord: target || base.targetWord,
         correctWord: target || base.correctWord,
         players: updatedPlayers
@@ -2141,11 +2204,14 @@ export default function App() {
       setTargetWord(wordToUse);
     }
 
-    if (winnerId === profile.id) {
+    if (isSelfWinner) {
       showToast('TEBRİKLER! Savaşı Kazandın!', 'success');
       unlockBadge('gladiator');
-      updateDailyScore(200);
+      // HARD LIMIT: Award 5 points for winning a duel (never exceed 5 points per match)
+      updateDailyScore(5);
       triggerVictoryCelebration(settings.soundEnabled);
+    } else if (serverWinnerUserId === 'draw') {
+      showToast('Düello berabere sona erdi!', 'info');
     } else {
       showToast('Maçı rakibin kazandı. Daha hızlı olmalısın!', 'error');
       playDefeatSound(settings.soundEnabled);
@@ -2330,34 +2396,26 @@ export default function App() {
   const checkAndTriggerMatchEnd = useCallback((matchData: any) => {
     if (!matchData) return false;
 
-    const matchIdKey = matchData.id || matchData.matchId || activeMatch?.id || activeMatch?.matchId;
+    const matchIdKey = matchData.id || matchData.matchId || activeMatchRef.current?.id || activeMatchRef.current?.matchId;
     if (matchIdKey && handledMatchEndIdsRef.current.has(matchIdKey)) {
       return true; // Match end was already processed for this match
     }
 
-    const winningPlayerEntry = Object.entries(matchData.players || {}).find(([_, p]: [string, any]) => p?.won === true || (p?.completed === true && p?.won === true));
-    
-    let winnerId = matchData.winnerId || 
-                   matchData.winner || 
-                   matchData.finishedBy || 
-                   (winningPlayerEntry ? winningPlayerEntry[0] : null);
+    const serverWinnerUserId = String(
+      matchData.winnerUserId || matchData.winnerId || matchData.winner || ''
+    ).trim();
 
-    const isFinished = matchData.isGameOver === true || 
-                       matchData.gameOver === true ||
-                       matchData.won === true ||
-                       matchData.status === 'finished' || 
-                       matchData.status === 'ended' ||
-                       matchData.status === 'completed' ||
-                       matchData.status === 'won' ||
-                       matchData.gameState === 'finished' ||
-                       matchData.gameState === 'FINISHED' ||
-                       Boolean(winnerId) ||
-                       Boolean(winningPlayerEntry);
+    const isFinished = (matchData.isGameOver === true || 
+                        matchData.gameOver === true ||
+                        matchData.status === 'finished' || 
+                        matchData.status === 'ended' ||
+                        matchData.gameState === 'finished' ||
+                        matchData.gameState === 'FINISHED') &&
+                       serverWinnerUserId !== '';
 
     if (isFinished) {
-      const finalWinnerId = winnerId || (winningPlayerEntry ? winningPlayerEntry[0] : 'opponent');
-      console.log(`[Real-time Match Sync] Match end detected! Winner: ${finalWinnerId}`);
-      handleInstantMatchEndRef.current(finalWinnerId, matchData);
+      console.log(`[Real-time Match Sync] Server match end confirmed! Winner: ${serverWinnerUserId}`);
+      handleInstantMatchEndRef.current(serverWinnerUserId, matchData);
       return true;
     }
     return false;
@@ -2927,8 +2985,8 @@ export default function App() {
           
           // Verification function to ensure scoring accuracy and reject invalid edge cases
           if (!verifyScoringAccuracy(scoreAwarded)) {
-            console.warn(`Scoring verification failed for calculated score: ${scoreAwarded}. Falling back to 50.`);
-            scoreAwarded = 50;
+            console.warn(`Scoring verification failed for calculated score: ${scoreAwarded}. Defaulting to 1.`);
+            scoreAwarded = Math.min(Math.max(scoreAwarded || 1, 1), 5);
           }
         }
       }
@@ -2959,71 +3017,14 @@ export default function App() {
         }
 
         if (hasWon) {
-          showToast(`Tebrikler! Kelimeyi doğru bildiniz! 🎉`, 'success');
+          showToast(`Tebrikler! Kelimeyi doğru bildiniz! Sonuç bekleniyor... 🎉`, 'success');
           playEnterSound(settings.soundEnabled);
           
           if (timerRef.current) {
             clearInterval(timerRef.current);
             timerRef.current = null;
           }
-          setGameStatus('idle'); // Wait for server state sync (match_round_start or match_end)
-
-          // Update Firestore atomic transaction across matches & rooms.
-          const matchRef = doc(db, 'matches', matchId);
-          const roomRef = doc(db, 'rooms', matchId);
-          const finishPayload = {
-            gameOver: true,
-            isGameOver: true, 
-            won: true,
-            winner: profile.id, 
-            winnerId: profile.id, 
-            finishedBy: profile.id, 
-            status: 'finished', 
-            gameState: 'finished',
-            [`players.${profile.id}.won`]: true,
-            [`players.${profile.id}.completed`]: true,
-            [`players.${profile.id}.status`]: 'won',
-            [`players.${profile.id}.gameState`]: 'FINISHED',
-            updatedAt: new Date().toISOString()
-          };
-
-          // Always sync room doc asynchronously
-          setDoc(roomRef, finishPayload, { merge: true }).catch(() => {});
-
-          runTransaction(db, async (transaction) => {
-            const matchDoc = await transaction.get(matchRef);
-            if (matchDoc.exists()) {
-              const data = matchDoc.data();
-              const alreadyEnded = data.isGameOver === true || 
-                                    data.winner || 
-                                    data.winnerId || 
-                                    data.finishedBy || 
-                                    data.status === 'finished' || 
-                                    data.gameState === 'finished';
-              if (alreadyEnded) {
-                // Someone else already won! Do not overwrite!
-                return { success: false, winner: data.winner || data.winnerId || data.finishedBy || 'opponent' };
-              }
-            }
-            // We are the first! Mark game as over, save our ID as the winner, set status as finished
-            transaction.set(matchRef, finishPayload, { merge: true });
-            return { success: true, winner: profile.id };
-          }).then((result) => {
-            if (result && !result.success) {
-              console.log(`Race condition lost. Winner is actually: ${result.winner}`);
-              // Fallback: we lost the race condition, so route us to defeat instantly
-              handleInstantMatchEnd(result.winner || 'opponent');
-            } else {
-              console.log('Successfully claimed victory via atomic transaction!');
-              handleInstantMatchEnd(profile.id);
-            }
-          }).catch((err) => {
-            console.error('Failed to update Firestore match winner via transaction, falling back:', err);
-            // Fallback to standard setDoc
-            setDoc(matchRef, finishPayload, { merge: true }).then(() => {
-              handleInstantMatchEnd(profile.id);
-            });
-          });
+          setGameStatus('idle'); // Lock inputs, await server authoritative GAME_OVER / match_end packet
 
           syncMatchState(updatedAttempts, updatedAttempts.length, true, true, scoreAwarded, Date.now());
         } else if (updatedAttempts.length >= 6) {
@@ -3118,7 +3119,7 @@ export default function App() {
     };
 
     // Beş puandan fazla ödül hiçbir şekilde verilmesin. Puan silme diye de bir ceza olmasın.
-    const cappedScoreAwarded = scoreAwarded > 0 ? Math.min(scoreAwarded, 5) : 0;
+    const cappedScoreAwarded = scoreAwarded > 0 ? Math.min(Math.max(scoreAwarded, 1), 5) : 0;
     const newScore = profile.dailyScore + cappedScoreAwarded;
     
     // Synchronously update the DOM element to keep responsiveness instant
@@ -3335,7 +3336,7 @@ export default function App() {
   const updateDailyScore = (score: number) => {
     // Beş puandan fazla ödül hiçbir şekilde verilmesin. Puan silme diye de bir ceza olmasın.
     if (score <= 0) return;
-    const cappedScore = Math.min(score, 5);
+    const cappedScore = Math.min(Math.max(score, 1), 5);
     const newScore = profile.dailyScore + cappedScore;
 
     const updatedProfile = {
@@ -3416,7 +3417,6 @@ export default function App() {
   // References to keep the physical keyboard listener persistent and prevent listener duplication/conflicts
   const currentAttemptRef = useRef(currentAttempt);
   const gameStatusRef = useRef(gameStatus);
-  const activeMatchRef = useRef(activeMatch);
   const isValidatingRef = useRef(isValidating);
   const isEditingNameRef = useRef(isEditingName);
   const showStatsModalRef = useRef(showStatsModal);
@@ -3916,20 +3916,22 @@ export default function App() {
 
   const handleUpdateProfile = async (name: string, avatarUrl?: string) => {
     const cleanName = name.trim();
-    const updated = {
-      ...profile,
-      name: cleanName,
-      ...(avatarUrl ? { avatarUrl } : {}),
-      nameSet: true
-    };
-    setProfile(updated);
+    setProfile(prev => {
+      const updated = {
+        ...prev,
+        name: cleanName,
+        ...(avatarUrl ? { avatarUrl } : {}),
+        nameSet: true
+      };
+      safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updated));
+      safeLocalStorage.setItem('saved_username', cleanName);
+      saveUserProfileToFirestore(updated).catch((err) => {
+        console.warn('Non-blocking profile save during handleUpdateProfile failed:', err);
+      });
+      return updated;
+    });
     setNameInput(cleanName);
     if (avatarUrl) setAvatarInput(avatarUrl);
-    safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updated));
-    safeLocalStorage.setItem('saved_username', cleanName);
-    saveUserProfileToFirestore(updated).catch((err) => {
-      console.warn('Non-blocking profile save during handleUpdateProfile failed:', err);
-    });
     showToast('Profiliniz güncellendi.', 'success');
   };
 
@@ -4089,13 +4091,17 @@ export default function App() {
           <WelcomeScreen
             profile={profile}
             onUpdateProfile={handleUpdateProfile}
-            onUpdateFriends={async (newFriends: string[]) => {
-              const updated = {
-                ...profile,
-                friends: newFriends
-              };
-              setProfile(updated);
-              await saveUserProfileToFirestore(updated);
+            onUpdateFriends={(newFriends: string[]) => {
+              setTimeout(async () => {
+                setProfile(prev => {
+                  const updated = {
+                    ...prev,
+                    friends: newFriends
+                  };
+                  saveUserProfileToFirestore(updated).catch(err => console.warn('Non-blocking friends update save failed:', err));
+                  return updated;
+                });
+              }, 0);
             }}
             dictionaryMode={dictionaryMode}
             onChangeDictionaryMode={setDictionaryMode}
@@ -4125,6 +4131,7 @@ export default function App() {
             onStartMatchmaking={async (wordsCount) => {
               await handleStartMatchmaking(wordsCount);
             }}
+            onChallengePlayer={handleChallengePlayer}
             matchmakingStatus={matchmakingStatus}
           />
         ) : (
@@ -4355,29 +4362,12 @@ export default function App() {
                     </div>
 
                     {/* Attempt Tracker Dots & Label */}
-                    <div className="mt-1 pt-1 border-t border-white/5 flex items-center justify-between">
-                      <div className="flex gap-1 items-center">
-                        {Array.from({ length: 6 }).map((_, idx) => {
-                          const isFilled = idx < selfAttemptCount;
-                          const isCurrent = idx === selfAttemptCount && !selfCompleted;
-                          return (
-                            <span
-                              key={idx}
-                              className={`w-2 h-2 rounded-full transition-all ${
-                                isFilled
-                                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
-                                  : isCurrent
-                                  ? 'bg-amber-400 animate-pulse ring-2 ring-amber-400/40'
-                                  : 'bg-gray-700/60'
-                              }`}
-                            />
-                          );
-                        })}
-                      </div>
-                      <span className="text-[10px] font-bold font-mono text-emerald-300">
-                        {selfCompleted ? (selfState.won ? 'Bildi ✓' : 'Bitti') : `Deneme ${selfAttemptCount}/6`}
-                      </span>
-                    </div>
+                    <ProgressDots
+                      currentAttemptCount={selfCurrentAttemptCount}
+                      isCompleted={selfCompleted}
+                      isWon={selfState.won}
+                      colorScheme="emerald"
+                    />
                   </div>
 
                   {/* Center VS Divider */}
@@ -4410,29 +4400,12 @@ export default function App() {
                     </div>
 
                     {/* Attempt Tracker Dots & Label */}
-                    <div className="mt-1 pt-1 border-t border-white/5 flex items-center justify-between">
-                      <div className="flex gap-1 items-center">
-                        {Array.from({ length: 6 }).map((_, idx) => {
-                          const isFilled = idx < oppAttemptCount;
-                          const isCurrent = idx === oppAttemptCount && !oppCompleted;
-                          return (
-                            <span
-                              key={idx}
-                              className={`w-2 h-2 rounded-full transition-all ${
-                                isFilled
-                                  ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.8)]'
-                                  : isCurrent
-                                  ? 'bg-amber-400/80 animate-ping ring-2 ring-amber-400/30'
-                                  : 'bg-gray-700/60'
-                              }`}
-                            />
-                          );
-                        })}
-                      </div>
-                      <span className="text-[10px] font-bold font-mono text-amber-300">
-                        {oppCompleted ? (oppState.won ? 'Bildi ✓' : 'Bitti') : `Deneme ${oppAttemptCount}/6`}
-                      </span>
-                    </div>
+                    <ProgressDots
+                      currentAttemptCount={oppCurrentAttemptCount}
+                      isCompleted={oppCompleted}
+                      isWon={oppState.won}
+                      colorScheme="amber"
+                    />
                   </div>
                 </div>
               </div>
@@ -4443,10 +4416,8 @@ export default function App() {
         {/* Game Layout Wrapper */}
         <div className="w-full flex-1 min-h-0 flex flex-col items-stretch justify-stretch gap-0.5 sm:gap-1 relative z-10">
           {/* Game Area Card */}
-          <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto card-theme rounded-[1.5rem] border border-[#3E485A]/30 p-2 sm:p-3 shadow-2xl flex flex-col items-center justify-between flex-1 min-h-0 overflow-hidden gap-y-0.5 transition-all duration-200 relative text-white" id="game-area-card">
+          <div className={`w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto card-theme rounded-[1.5rem] border border-[#3E485A]/30 p-2 sm:p-3 shadow-2xl flex flex-col items-center ${isMatchEnded || gameStatus === 'won' || gameStatus === 'lost' || Boolean(activeMatch && (activeMatch.status === 'ended' || activeMatch.players[profile.id]?.completed)) ? 'game-ended justify-center my-auto' : 'justify-between'} flex-1 min-h-0 overflow-hidden gap-y-0.5 transition-all duration-200 relative text-white`} id="game-area-card">
           {/* Subtle atmospheric ambient glow inside the card */}
-          <div className="absolute -top-24 -left-24 w-48 h-48 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-teal-500/5 rounded-full blur-3xl pointer-events-none" />
 
 
 
@@ -4796,11 +4767,19 @@ export default function App() {
           {activeMatch && isMatchEnded && (
             <div className="w-full max-w-sm sm:max-w-md mx-auto bg-slate-900/95 border-2 border-amber-500/30 rounded-3xl p-4 sm:p-5 text-center shadow-2xl animate-scale-up flex flex-col justify-between max-h-[85vh] overflow-hidden" id="multiplayer-results-container">
               {(() => {
-                const matchWinnerId = activeMatch.winnerId || activeMatch.winner || (
-                  Object.entries(activeMatch.players || {}).find(([_, pState]: [string, any]) => pState?.won)?.[0]
+                const serverWinnerId = String(
+                  activeMatch.winnerUserId || activeMatch.winnerId || activeMatch.winner || ''
+                ).trim();
+                const currentUserId = String(profile?.id || '').trim();
+                const currentAuthUid = String(auth.currentUser?.uid || '').trim();
+
+                const isWinner = Boolean(
+                  serverWinnerId &&
+                  serverWinnerId !== 'draw' &&
+                  ((currentUserId !== '' && serverWinnerId === currentUserId) ||
+                   (currentAuthUid !== '' && serverWinnerId === currentAuthUid))
                 );
-                const isWinner = matchWinnerId === profile.id;
-                const isDraw = matchWinnerId === 'draw';
+                const isDraw = serverWinnerId === 'draw';
 
                 return (
                   <>
@@ -4893,14 +4872,11 @@ export default function App() {
                           const attemptCount = Math.max(pAttempts.length, pAttemptsCount);
 
                           // Determine win status
-                          let isWonPlayer = false;
-                          if (isSelf) {
-                            isWonPlayer = matchWinnerId === profile.id || isWinner;
-                          } else {
-                            isWonPlayer = matchWinnerId === pId || 
-                                         (Boolean(matchWinnerId) && matchWinnerId !== profile.id && matchWinnerId !== 'draw') || 
-                                         (!isWinner && !isDraw && Boolean(matchWinnerId));
-                          }
+                          const isWonPlayer = Boolean(
+                            serverWinnerId &&
+                            serverWinnerId !== 'draw' &&
+                            (pId === serverWinnerId || (isSelf && isWinner))
+                          );
 
                           let statusText = '';
                           if (isWonPlayer) {
@@ -5259,10 +5235,7 @@ export default function App() {
         <SettingsModal
           settings={settings}
           onChangeSettings={setSettings}
-          onClose={() => {
-            setShowSettingsModal(false);
-            handleManualReconnect();
-          }}
+          onClose={() => setShowSettingsModal(false)}
           darkMode={darkMode}
           onToggleDarkMode={() => setDarkMode(!darkMode)}
           onOpenStats={() => setShowStatsModal(true)}

@@ -46,6 +46,18 @@ export interface GameAttempt {
   feedback: ('green' | 'orange' | 'grey')[];
 }
 
+export interface FriendRequest {
+  id: string;
+  fromUid: string;
+  toUid: string;
+  fromName: string;
+  toName: string;
+  fromAvatarUrl?: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface NetworkLogEntry {
   timestamp: string;
   type: 'info' | 'error' | 'success' | 'sent' | 'received';

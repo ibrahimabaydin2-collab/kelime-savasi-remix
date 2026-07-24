@@ -24,21 +24,29 @@ export function calculateDynamicScore(
     return 5;
   }
 
+  let score = 1;
   switch (attemptCount) {
     case 1:
-      return 5;
+      score = 5;
+      break;
     case 2:
-      return 4;
+      score = 4;
+      break;
     case 3:
-      return 3;
+      score = 3;
+      break;
     case 4:
-      return 2;
+      score = 2;
+      break;
     case 5:
     case 6:
-      return 1;
+      score = 1;
+      break;
     default:
-      return 1;
+      score = 1;
+      break;
   }
+  return Math.min(Math.max(score, 1), 5);
 }
 
 /**

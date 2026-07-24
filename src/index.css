@@ -37,3 +37,31 @@ html, body, #root {
   overflow-x: hidden;
 }
 
+/* Landscape orientation results layout adjustment for #game-area-card */
+@media (orientation: landscape) {
+  #game-area-card.game-ended {
+    justify-content: center !important;
+    align-items: center !important;
+    margin-top: auto !important;
+    margin-bottom: auto !important;
+    max-height: calc(100vh - 60px) !important;
+    padding-bottom: 1.5rem !important;
+    overflow-y: auto !important;
+  }
+
+  .android-hybrid #game-area-card.game-ended {
+    justify-content: center !important;
+    align-items: center !important;
+    max-height: calc(100vh - 10px) !important;
+    padding-bottom: 12px !important;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  #game-area-card.game-ended {
+    padding-bottom: 2.25rem !important;
+    margin-bottom: 50px !important;
+    max-height: calc(100vh - 55px) !important;
+  }
+}
+

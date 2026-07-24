@@ -11,7 +11,16 @@ import { getBaseUrl } from '../utils/api.js';
 import { validateUsername } from '../utils/usernameValidation.js';
 import { getDailyWordAndLength } from '../data/wordlist.js';
 import { getXPForLevel, getLevelForScore } from '../utils/scoring.js';
-import { fetchUsersWhoAddedMe, searchUserByName, checkUsernameExists } from '../lib/firebase.js';
+import { 
+  fetchUsersWhoAddedMe, 
+  fetchProfilesByIds, 
+  searchUserByName, 
+  checkUsernameExists,
+  sendFriendRequestInFirestore,
+  acceptFriendRequestInFirestore,
+  removeFriendInFirestore,
+  fetchFriendRequestsAndSync
+} from '../lib/firebase.js';
 import GoldWallet from './GoldWallet.js';
 
 interface WelcomeScreenProps {
@@ -46,6 +55,7 @@ interface WelcomeScreenProps {
   onClaimDailyReward?: () => Promise<void>;
   onWatchRewardedAdReward?: () => Promise<void>;
   onStartMatchmaking?: (wordsCount?: number) => void;
+  onChallengePlayer?: (player: { id: string; name: string }, wordLength: number) => void;
   matchmakingStatus?: 'idle' | 'queued';
 }
 
@@ -77,6 +87,7 @@ export default function WelcomeScreen({
   onClaimDailyReward,
   onWatchRewardedAdReward,
   onStartMatchmaking,
+  onChallengePlayer,
   matchmakingStatus = 'idle'
 }: WelcomeScreenProps) {
   const [showHowToPlay, setShowHowToPlay] = useState<boolean>(false);
@@ -185,21 +196,44 @@ export default function WelcomeScreen({
   const isFriend = (playerId: string) => (profile.friends || []).includes(playerId);
 
   const addFriend = async (playerOrId: any) => {
-    const targetId = typeof playerOrId === 'string' ? playerOrId : playerOrId.id;
-    const currentFriends = profile.friends || [];
-    if (currentFriends.includes(targetId)) return;
-    
-    const updated = [...currentFriends, targetId];
-    if (onUpdateFriends) {
-      onUpdateFriends(updated);
+    const targetId = typeof playerOrId === 'string' ? playerOrId : playerOrId?.id;
+    if (!profile?.id || !targetId || profile.id === targetId) return;
+
+    const isIncoming = incomingRequests.some(r => r.id === targetId);
+
+    try {
+      if (isIncoming) {
+        // Accept incoming request
+        await acceptFriendRequestInFirestore(profile.id, targetId);
+      } else {
+        // Send new friend request
+        const targetName = typeof playerOrId === 'object' ? playerOrId.name : undefined;
+        await sendFriendRequestInFirestore(profile, targetId, targetName);
+      }
+
+      const currentFriends = profile.friends || [];
+      const updatedFriends = Array.from(new Set([...currentFriends, targetId]));
+      if (onUpdateFriends) {
+        onUpdateFriends(updatedFriends);
+      }
+      await refreshFriendsList();
+    } catch (err) {
+      console.error('Error in addFriend:', err);
     }
   };
 
   const removeFriend = async (targetId: string) => {
-    const currentFriends = profile.friends || [];
-    const updated = currentFriends.filter(id => id !== targetId);
-    if (onUpdateFriends) {
-      onUpdateFriends(updated);
+    if (!profile?.id || !targetId) return;
+    try {
+      await removeFriendInFirestore(profile.id, targetId);
+      const currentFriends = profile.friends || [];
+      const updatedFriends = currentFriends.filter(id => id !== targetId);
+      if (onUpdateFriends) {
+        onUpdateFriends(updatedFriends);
+      }
+      await refreshFriendsList();
+    } catch (err) {
+      console.error('Error in removeFriend:', err);
     }
   };
 
@@ -207,38 +241,33 @@ export default function WelcomeScreen({
     if (!isOnline || !profile?.id) return;
     setLoadingFriends(true);
     try {
-      const usersWhoAddedMe = await fetchUsersWhoAddedMe(profile.id);
-      const usersWhoAddedMeIds = usersWhoAddedMe.map(u => u.id);
-      const myFriends = profile.friends || [];
+      const { confirmedFriends: confirmed, incomingRequests: incoming, updatedFriendsArray } = 
+        await fetchFriendRequestsAndSync(profile);
 
-      // Mutual friends (Onaylı Arkadaşlar): users I added and who also added me
-      const mutualIds = myFriends.filter(id => usersWhoAddedMeIds.includes(id));
-      const mutualList = mutualIds.map(id => {
-        const p = usersWhoAddedMe.find(u => u.id === id);
-        return {
-          id,
-          name: p?.name || (p as any)?.username || (p as any)?.displayName || 'Bilinmeyen Oyuncu',
-          avatarUrl: p?.avatarUrl,
-          isOnline: (p as any)?.isOnline ?? false,
-          lastSeen: (p as any)?.lastSeen || ((p as any)?.lastActive ? new Date((p as any).lastActive).getTime() : undefined)
-        };
-      });
+      const confirmedMapped = confirmed.map(p => ({
+        id: p.id,
+        name: p.name || (p as any).username || (p as any).displayName || 'Oyuncu',
+        avatarUrl: p.avatarUrl,
+        isOnline: (p as any).isOnline ?? false,
+        status: (p as any).status,
+        lastSeen: (p as any).lastSeen || ((p as any).lastActive ? new Date((p as any).lastActive).getTime() : undefined)
+      }));
 
-      // Incoming requests (Gelen İstekler): users who added me, but I have not added them yet
-      const incomingIds = usersWhoAddedMeIds.filter(id => !myFriends.includes(id));
-      const incomingList = incomingIds.map(id => {
-        const p = usersWhoAddedMe.find(u => u.id === id);
-        return {
-          id,
-          name: p?.name || (p as any)?.username || (p as any)?.displayName || 'Bilinmeyen Oyuncu',
-          avatarUrl: p?.avatarUrl,
-          isOnline: (p as any)?.isOnline ?? false,
-          lastSeen: (p as any)?.lastSeen || ((p as any)?.lastActive ? new Date((p as any).lastActive).getTime() : undefined)
-        };
-      });
+      const incomingMapped = incoming.map(p => ({
+        id: p.id,
+        name: p.name || (p as any).username || (p as any).displayName || 'Oyuncu',
+        avatarUrl: p.avatarUrl,
+        isOnline: (p as any).isOnline ?? false,
+        status: (p as any).status,
+        lastSeen: (p as any).lastSeen || ((p as any).lastActive ? new Date((p as any).lastActive).getTime() : undefined)
+      }));
 
-      setConfirmedFriends(mutualList);
-      setIncomingRequests(incomingList);
+      setConfirmedFriends(confirmedMapped);
+      setIncomingRequests(incomingMapped);
+
+      if (onUpdateFriends && updatedFriendsArray && updatedFriendsArray.length !== (profile.friends || []).length) {
+        onUpdateFriends(updatedFriendsArray);
+      }
     } catch (err) {
       console.error('Error refreshing friends list:', err);
     } finally {
@@ -422,7 +451,6 @@ export default function WelcomeScreen({
     }
   };
 
-  const friendsKey = (profile.friends || []).join(',');
   useEffect(() => {
     if (showFriendsModal) {
       refreshFriendsList();
@@ -438,7 +466,7 @@ export default function WelcomeScreen({
 
       return () => clearInterval(interval);
     }
-  }, [showFriendsModal, friendsKey]);
+  }, [showFriendsModal]);
 
   // Profile Inline Editor State
   const [isEditing, setIsEditing] = useState<boolean>(false);
@@ -1236,24 +1264,18 @@ export default function WelcomeScreen({
       <div className="w-full flex flex-col gap-2 relative z-10" id="main-play-section">
         <button
           onClick={() => setShowGameSetup(true)}
-          className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 active:scale-[0.98] text-slate-950 py-4 px-5 rounded-3xl shadow-[0_5px_0_#D97706,0_8px_20px_rgba(245,158,11,0.35)] transition-all flex items-center justify-between uppercase tracking-wider cursor-pointer relative overflow-hidden border border-amber-200/50"
+          className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 active:scale-[0.98] text-slate-950 py-2.5 px-4 rounded-2xl shadow-[0_4px_0_#D97706,0_6px_16px_rgba(245,158,11,0.3)] transition-all flex items-center justify-between uppercase tracking-wider cursor-pointer relative overflow-hidden border border-amber-200/50"
           id="main-start-game-btn"
         >
-          <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-slate-950/15 flex items-center justify-center shrink-0 border border-slate-900/10">
-              <Swords size={24} className="text-slate-950 stroke-[2.5]" />
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-slate-950/15 flex items-center justify-center shrink-0 border border-slate-900/10">
+              <Swords size={18} className="text-slate-950 stroke-[2.5]" />
             </div>
-            <div className="text-left leading-tight">
-              <div className="flex items-center gap-2">
-                <span className="font-black text-slate-950 text-base sm:text-lg tracking-wide">OYUN OYNA</span>
-                <span className="text-[8px] font-black bg-slate-950 text-amber-300 px-2 py-0.5 rounded-full uppercase tracking-widest font-mono">1v1 & SOLO ⚡</span>
-              </div>
-              <span className="block text-[10px] font-bold text-slate-900/80 font-sans normal-case mt-0.5">Solo Pratik veya Canlı 1v1 Düello Başlat</span>
-            </div>
+            <span className="font-black text-slate-950 text-sm sm:text-base tracking-wide">OYUN OYNA</span>
           </div>
-          <div className="px-3.5 py-2 bg-slate-950 text-amber-300 text-[11px] font-black rounded-2xl uppercase tracking-widest shadow-sm flex items-center gap-1.5 shrink-0">
+          <div className="px-3 py-1.5 bg-slate-950 text-amber-300 text-[10px] font-black rounded-xl uppercase tracking-widest shadow-sm flex items-center gap-1 shrink-0">
             <span>GİRİŞ</span>
-            <Play size={12} className="fill-current" />
+            <Play size={10} className="fill-current" />
           </div>
         </button>
       </div>
@@ -1697,6 +1719,19 @@ export default function WelcomeScreen({
                             </div>
 
                             <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() => {
+                                  if (onChallengePlayer) {
+                                    onChallengePlayer(friend, duelWordLength || wordLength || 5);
+                                  }
+                                }}
+                                className="text-[9.5px] px-2.5 py-1 rounded-xl font-black uppercase tracking-wider transition-all duration-150 flex items-center gap-1 bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 shadow-md active:scale-95 cursor-pointer border border-amber-200/50"
+                                title={`${friend.name} oyuncusuna Meydan Oku`}
+                              >
+                                <Swords size={11} className="stroke-[2.5]" />
+                                <span>Meydan Oku</span>
+                              </button>
+
                               <button
                                 onClick={() => removeFriend(friend.id)}
                                 className="p-1.5 rounded-lg text-rose-400/80 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
