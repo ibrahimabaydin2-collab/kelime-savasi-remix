@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Sparkles, Swords, User, Mail, Lock, ShieldAlert, LogIn, AlertCircle, Smartphone, ArrowLeft } from 'lucide-react';
-import { UserProfile } from '../types.js';
-import { validateUsername, validatePassword } from '../utils/usernameValidation.js';
-import PrivacyPolicyModal from './PrivacyPolicyModal.js';
+import { UserProfile } from '../types';
+import { validateUsername, validatePassword } from '../utils/usernameValidation';
+import PrivacyPolicyModal from './PrivacyPolicyModal';
 import { 
   signInAsGuest, 
   registerWithEmailAndPassword, 
@@ -15,7 +15,7 @@ import {
   RecaptchaVerifier,
   signInWithPhoneNumber,
   checkUsernameExists
-} from '../lib/firebase.js';
+} from '../lib/firebase';
 
 interface AuthScreenProps {
   onAuthComplete: (profile: UserProfile, firebaseUser: any) => void;

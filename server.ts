@@ -8,9 +8,9 @@ import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { WebSocketServer, WebSocket } from 'ws';
 import { doc, getDoc, setDoc, runTransaction } from 'firebase/firestore';
-import { db } from './src/lib/firebase.js';
-import { getRandomWord, isWordInCuratedList, getDailyWordAndLength } from './src/data/wordlist.js';
-import { turkishUpper, turkishLower } from './src/utils/turkish.js';
+import { db } from './src/lib/firebase';
+import { getRandomWord, isWordInCuratedList, getDailyWordAndLength } from './src/data/wordlist';
+import { turkishUpper, turkishLower } from './src/utils/turkish';
 import axios from 'axios';
 
 dotenv.config();
@@ -597,6 +597,86 @@ app.post('/api/trigger-match-end-push', async (req, res) => {
   }
 });
 
+// Trigger FCM Challenge Push Notification Endpoint
+app.post('/api/send-challenge-notification', async (req, res) => {
+  try {
+    const { challengedId, challengerName, wordLength, challengeId } = req.body || {};
+    if (!challengedId || !challengeId) {
+      return res.status(400).json({ error: 'challengedId and challengeId are required' });
+    }
+
+    void sendFcmChallengeNotification({
+      challengedId,
+      challengerName: challengerName || 'Bir arkadaşın',
+      wordLength: Number(wordLength) || 5,
+      challengeId
+    }).catch(() => {});
+
+    res.json({ success: true, message: 'Challenge notification triggered successfully' });
+  } catch (error: any) {
+    console.error('[FCM API] Error triggering challenge notification:', error);
+    res.status(500).json({ error: error?.message });
+  }
+});
+
+// FCM Challenge Push Notification Helper
+async function sendFcmChallengeNotification(opts: {
+  challengedId: string;
+  challengerName: string;
+  wordLength: number;
+  challengeId: string;
+}) {
+  const { challengedId, challengerName, wordLength, challengeId } = opts;
+  try {
+    const userSnap = await getDoc(doc(db, 'users', challengedId));
+    if (!userSnap.exists()) return;
+    const uData = userSnap.data();
+    if (!uData?.fcmToken) return;
+
+    let fcmApiKey = process.env.FIREBASE_API_KEY || '';
+    if (!fcmApiKey) {
+      try {
+        const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+        if (fs.existsSync(configPath)) {
+          const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          fcmApiKey = parsed.apiKey || '';
+        }
+      } catch (e) {}
+    }
+
+    const payload = {
+      to: uData.fcmToken,
+      priority: 'high',
+      content_available: true,
+      data: {
+        type: 'challenge_received',
+        challengeId,
+        challengerName,
+        wordLength: String(wordLength),
+        timestamp: String(Date.now()),
+        click_action: 'FLUTTER_NOTIFICATION_CLICK'
+      },
+      notification: {
+        title: '⚔️ Yeni Meydan Okuma!',
+        body: `${challengerName} sana ${wordLength} harfli kelime yarışında meydan okudu!`,
+        sound: 'default',
+        priority: 'high'
+      }
+    };
+
+    await axios.post('https://fcm.googleapis.com/fcm/send', payload, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `key=${fcmApiKey}`
+      },
+      timeout: 4000
+    });
+    console.log(`[FCM Challenge Push] Sent to user ${challengedId}`);
+  } catch (err) {
+    console.warn('[FCM Challenge Push Error]:', err);
+  }
+}
+
 // FCM High Priority Push Notification Helper for Match End Events
 async function sendFcmHighPriorityMatchEndNotification(opts: {
   matchId: string;
@@ -754,6 +834,7 @@ async function startServer() {
 
   const activeDuelMatches = new Map<string, ActiveDuelMatch>();
   const socketToMatchIdMap = new Map<WebSocket, string>();
+  const activeServerChallenges = new Map<string, any>();
 
   // GET /api/match-status for live real-time game state synchronization across physical mobile APKs
   app.get('/api/match-status', async (req, res) => {
@@ -1243,14 +1324,14 @@ async function startServer() {
 
           const player = { id: playerId, name: playerName, avatarUrl: playerAvatar };
           connectedClients.set(ws, player);
-          const length = Number(data.wordLength) || 5;
+          const length = Number(data.wordLength || data.length || data.wordsCount || data.duelWordLength) || 5;
 
           // Remove old queue entries for this ws if any
           const existingQueueIdx = matchmakingQueue.findIndex(q => q.ws === ws);
           if (existingQueueIdx !== -1) matchmakingQueue.splice(existingQueueIdx, 1);
 
           // Find waiting opponent
-          const matchIndex = matchmakingQueue.findIndex(q => q.wordLength === length && q.ws !== ws && q.ws.readyState === WebSocket.OPEN);
+          const matchIndex = matchmakingQueue.findIndex(q => Number(q.wordLength) === Number(length) && q.ws !== ws && q.ws.readyState === WebSocket.OPEN);
           if (matchIndex !== -1) {
             const opponent = matchmakingQueue.splice(matchIndex, 1)[0];
             const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
@@ -1513,6 +1594,148 @@ async function startServer() {
           }
         } else if (data.type === 'leave_match') {
           handlePlayerDisconnect(ws);
+        } else if (data.type === 'challenge') {
+          const existingClient = connectedClients.get(ws);
+          const challengerId = data.challengerId || existingClient?.id;
+          const challengerName = data.challengerName || existingClient?.name || 'Bir arkadaşın';
+          const challengerAvatar = data.challengerAvatar || existingClient?.avatarUrl || '';
+          const challengedId = data.challengedId;
+          const wordLength = Number(data.wordLength) || 5;
+          const challengeId = data.challengeId || ('chal_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
+
+          const challengeObj = {
+            id: challengeId,
+            challengeId,
+            challengerId,
+            challengerName,
+            challengerAvatar,
+            challengedId,
+            wordLength,
+            createdAt: Date.now()
+          };
+
+          activeServerChallenges.set(challengeId, challengeObj);
+
+          // Broadcast to target WebSocket client if connected
+          for (const [clientWs, clientInfo] of connectedClients.entries()) {
+            if (clientInfo && clientInfo.id === challengedId && clientWs.readyState === WebSocket.OPEN) {
+              sendWs(clientWs, {
+                type: 'challenge_received',
+                challenge: challengeObj
+              });
+              console.log(`[WebSocket Server] Broadcasted challenge_received to ${clientInfo.name} (${challengedId})`);
+            }
+          }
+
+          // Trigger FCM push notification as well
+          void sendFcmChallengeNotification({
+            challengedId,
+            challengerName,
+            wordLength,
+            challengeId
+          }).catch(() => {});
+        } else if (data.type === 'challenge_respond') {
+          const challengeId = data.challengeId;
+          const accept = !!data.accept;
+          const challenge = activeServerChallenges.get(challengeId) || data.challenge;
+
+          if (accept) {
+            const wordLength = challenge?.wordLength || Number(data.wordLength) || 5;
+            const correctWord = turkishUpper(getRandomWord(wordLength, true));
+            const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+
+            let challengerWs: WebSocket | null = null;
+            let challengedWs: WebSocket | null = ws;
+
+            const challengerId = challenge?.challengerId || data.challengerId;
+            const challengerName = challenge?.challengerName || data.challengerName || 'Oyuncu 1';
+            const challengerAvatar = challenge?.challengerAvatar || '';
+
+            const existingClient = connectedClients.get(ws);
+            const challengedId = existingClient?.id || challenge?.challengedId || data.challengedId;
+            const challengedName = existingClient?.name || challenge?.challengedName || 'Oyuncu 2';
+            const challengedAvatar = existingClient?.avatarUrl || '';
+
+            for (const [clientWs, clientInfo] of connectedClients.entries()) {
+              if (clientInfo && clientInfo.id === challengerId && clientWs.readyState === WebSocket.OPEN) {
+                challengerWs = clientWs;
+                break;
+              }
+            }
+
+            const matchObj: ActiveDuelMatch = {
+              matchId,
+              wordLength,
+              correctWord,
+              gameState: 'WAITING',
+              player1: {
+                id: challengerId,
+                name: challengerName,
+                avatarUrl: challengerAvatar,
+                ws: challengerWs,
+                connected: true,
+                attempts: []
+              },
+              player2: {
+                id: challengedId,
+                name: challengedName,
+                avatarUrl: challengedAvatar,
+                ws: challengedWs,
+                connected: true,
+                attempts: []
+              },
+              winner: null,
+              loser: null,
+              winReason: null,
+              createdAt: Date.now()
+            };
+
+            activeDuelMatches.set(matchId, matchObj);
+            if (challengerWs) socketToMatchIdMap.set(challengerWs, matchId);
+            if (challengedWs) socketToMatchIdMap.set(challengedWs, matchId);
+
+            const initialFirestoreMatch = {
+              id: matchId,
+              matchId,
+              wordLength,
+              targetWord: correctWord,
+              correctWord,
+              gameState: 'PLAYING',
+              status: 'playing',
+              createdAt: new Date().toISOString(),
+              player1: { id: challengerId, name: challengerName, avatarUrl: challengerAvatar },
+              player2: { id: challengedId, name: challengedName, avatarUrl: challengedAvatar },
+              players: {
+                [challengerId]: { id: challengerId, name: challengerName, avatarUrl: challengerAvatar, attempts: [], completed: false, won: false },
+                [challengedId]: { id: challengedId, name: challengedName, avatarUrl: challengedAvatar, attempts: [], completed: false, won: false }
+              },
+              isGameOver: false,
+              winner: null
+            };
+
+            setDoc(doc(db, 'matches', matchId), initialFirestoreMatch, { merge: true }).catch(() => {});
+            setDoc(doc(db, 'rooms', matchId), initialFirestoreMatch, { merge: true }).catch(() => {});
+            setDoc(doc(db, 'challenges', challengeId), { status: 'accepted', matchId }, { merge: true }).catch(() => {});
+
+            const startPayload = {
+              type: 'match_start',
+              matchId,
+              gameState: 'PLAYING',
+              wordLength,
+              correctWord,
+              targetWord: correctWord,
+              player1: { id: challengerId, name: challengerName, avatarUrl: challengerAvatar },
+              player2: { id: challengedId, name: challengedName, avatarUrl: challengedAvatar }
+            };
+
+            if (challengerWs && challengerWs.readyState === WebSocket.OPEN) sendWs(challengerWs, startPayload);
+            if (challengedWs && challengedWs.readyState === WebSocket.OPEN) sendWs(challengedWs, startPayload);
+
+            activeServerChallenges.delete(challengeId);
+          } else {
+            setDoc(doc(db, 'challenges', challengeId), { status: 'declined' }, { merge: true }).catch(() => {});
+            activeServerChallenges.delete(challengeId);
+          }
         }
       } catch (e) {
         console.error('[WebSocket Server] Error parsing message:', e);

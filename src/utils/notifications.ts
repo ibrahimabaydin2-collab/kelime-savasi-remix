@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { getDailyWordAndLength } from '../data/wordlist.js';
+import { getDailyWordAndLength } from '../data/wordlist';
 
 /**
  * Schedules daily reminder notifications for the next 7 days.

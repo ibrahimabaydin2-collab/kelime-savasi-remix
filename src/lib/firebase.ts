@@ -30,6 +30,7 @@ import {
   persistentLocalCache,
   persistentMultipleTabManager,
   memoryLocalCache,
+  getFirestore,
   collection,
   query,
   where,
@@ -42,7 +43,7 @@ import {
   setLogLevel
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { UserProfile, FriendRequest } from '../types.js';
+import { UserProfile, FriendRequest } from '../types';
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
@@ -99,17 +100,16 @@ function createSafeFirestore() {
 
   try {
     return initializeFirestore(app, {
-      experimentalForceLongPolling: isMobileOrHybrid,
-      experimentalAutoDetectLongPolling: !isMobileOrHybrid,
+      experimentalAutoDetectLongPolling: true,
       localCache: cacheConfig
     }, dbId);
   } catch (err) {
-    console.warn('[Firebase] Primary initializeFirestore failed, trying resilient fallback:', err);
-    return initializeFirestore(app, {
-      experimentalForceLongPolling: isMobileOrHybrid,
-      experimentalAutoDetectLongPolling: !isMobileOrHybrid,
-      localCache: memoryLocalCache()
-    }, dbId);
+    console.warn('[Firebase] initializeFirestore already initialized or failed, retrieving existing db instance:', err);
+    try {
+      return getFirestore(app, dbId);
+    } catch (e2) {
+      return getFirestore(app);
+    }
   }
 }
 

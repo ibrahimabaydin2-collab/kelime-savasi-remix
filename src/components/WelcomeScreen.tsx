@@ -6,11 +6,11 @@ import {
   Sun, Moon, Sliders, BarChart2, X, ArrowLeft, UserPlus, UserMinus, Clock, Puzzle,
   Bot
 } from 'lucide-react';
-import { UserProfile } from '../types.js';
-import { getBaseUrl } from '../utils/api.js';
-import { validateUsername } from '../utils/usernameValidation.js';
-import { getDailyWordAndLength } from '../data/wordlist.js';
-import { getXPForLevel, getLevelForScore } from '../utils/scoring.js';
+import { UserProfile } from '../types';
+import { getBaseUrl } from '../utils/api';
+import { validateUsername } from '../utils/usernameValidation';
+import { getDailyWordAndLength } from '../data/wordlist';
+import { getXPForLevel, getLevelForScore } from '../utils/scoring';
 import { 
   fetchUsersWhoAddedMe, 
   fetchProfilesByIds, 
@@ -20,8 +20,9 @@ import {
   acceptFriendRequestInFirestore,
   removeFriendInFirestore,
   fetchFriendRequestsAndSync
-} from '../lib/firebase.js';
-import GoldWallet from './GoldWallet.js';
+} from '../lib/firebase';
+import { suspendAudioContext, resumeAudioContext } from '../utils/soundEffects';
+import GoldWallet from './GoldWallet';
 
 interface WelcomeScreenProps {
   profile: UserProfile;
@@ -331,6 +332,9 @@ export default function WelcomeScreen({
         clearAdRequestFlags();
         setIsWatchingAd(false);
         setIsAdLoading(false);
+        resumeAudioContext();
+        document.body.classList.remove('ad-active');
+        try { (window as any).AndroidBridge?.preventAdLayoutLoops?.(); } catch (e) {}
         onRewardRef.current?.();
         setShowAdSuccess(true);
       };
@@ -339,18 +343,27 @@ export default function WelcomeScreen({
         clearAdRequestFlags();
         setIsWatchingAd(false);
         setIsAdLoading(false);
+        resumeAudioContext();
+        document.body.classList.remove('ad-active');
+        try { (window as any).AndroidBridge?.preventAdLayoutLoops?.(); } catch (e) {}
       };
 
       (window as any).onAndroidAdFailedToShow = (err: string) => {
         clearAdRequestFlags();
         setIsWatchingAd(false);
         setIsAdLoading(false);
+        resumeAudioContext();
+        document.body.classList.remove('ad-active');
+        try { (window as any).AndroidBridge?.preventAdLayoutLoops?.(); } catch (e) {}
         alert("Reklam gösterilemedi: " + err);
       };
 
       (window as any).onAndroidAdFailedToLoad = (err: string) => {
         clearAdRequestFlags();
         setIsAdLoading(false);
+        resumeAudioContext();
+        document.body.classList.remove('ad-active');
+        try { (window as any).AndroidBridge?.preventAdLayoutLoops?.(); } catch (e) {}
         alert("Reklam yüklenemedi: " + err);
       };
 
@@ -363,18 +376,24 @@ export default function WelcomeScreen({
           console.log("onAndroidAdLoaded triggered, but no active user request. Skipping auto-show.");
           clearAdRequestFlags();
           setIsAdLoading(false);
+          resumeAudioContext();
+          document.body.classList.remove('ad-active');
           return;
         }
 
         // Reset all flags first to prevent any back-to-back triggers!
         clearAdRequestFlags();
         setIsAdLoading(false);
+        suspendAudioContext();
+        document.body.classList.add('ad-active');
         try {
           if ((window as any).AndroidBridge && (window as any).AndroidBridge.showRewardedAd) {
             (window as any).AndroidBridge.showRewardedAd();
           }
         } catch (e) {
           console.error("Error showing ad after load:", e);
+          resumeAudioContext();
+          document.body.classList.remove('ad-active');
         }
       };
     }
@@ -403,6 +422,8 @@ export default function WelcomeScreen({
         if ((window as any).AndroidBridge.isRewardedAdLoaded && (window as any).AndroidBridge.isRewardedAdLoaded()) {
           if ((window as any).AndroidBridge.showRewardedAd) {
             clearAdRequestFlags(); // Will be shown immediately, reset the flag
+            suspendAudioContext();
+            document.body.classList.add('ad-active');
             (window as any).AndroidBridge.showRewardedAd();
           }
         } else {
@@ -1918,11 +1939,11 @@ export default function WelcomeScreen({
               RAKİP ARANIYOR...
             </h3>
             <p className="text-xs text-gray-300 leading-relaxed mb-6">
-              {wordLength} harfli canlı düello için rakip bekleniyor. Rakip eşleştiği anda oyun iki oyuncu için de aynı anda başlayacaktır.
+              {currentDuelWordLength} harfli canlı düello için rakip bekleniyor. Rakip eşleştiği anda oyun iki oyuncu için de aynı anda başlayacaktır.
             </p>
 
             <button
-              onClick={() => onStartMatchmaking && onStartMatchmaking(wordLength)}
+              onClick={() => onStartMatchmaking && onStartMatchmaking(currentDuelWordLength)}
               className="w-full bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition cursor-pointer active:scale-95 shadow-md"
               id="cancel-matchmaking-overlay-btn"
             >

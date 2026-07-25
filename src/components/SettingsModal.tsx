@@ -22,9 +22,9 @@ import {
   Sparkles,
   Wifi
 } from 'lucide-react';
-import { UserProfile, NetworkLogEntry } from '../types.js';
-import { validateUsername, validatePassword } from '../utils/usernameValidation.js';
-import PrivacyPolicyModal from './PrivacyPolicyModal.js';
+import { UserProfile, NetworkLogEntry } from '../types';
+import { validateUsername, validatePassword } from '../utils/usernameValidation';
+import PrivacyPolicyModal from './PrivacyPolicyModal';
 import { 
   auth, 
   db,
@@ -35,7 +35,7 @@ import {
   RecaptchaVerifier,
   linkWithCredential,
   checkUsernameExists
-} from '../lib/firebase.js';
+} from '../lib/firebase';
 import { collection, getDocs, writeBatch, doc } from 'firebase/firestore';
 
 export interface AppSettings {

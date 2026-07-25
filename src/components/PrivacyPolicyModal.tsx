@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Shield, X, Mail, ChevronRight, Send, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
-import { getApiUrl } from '../utils/api.js';
+import { getApiUrl } from '../utils/api';
 
 interface PrivacyPolicyModalProps {
   isOpen: boolean;

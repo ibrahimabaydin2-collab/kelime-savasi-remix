@@ -33,7 +33,7 @@ import {
   LabelList 
 } from 'recharts';
 import { UserProfile, Badge, DailyMission } from '../types';
-import { getBaseUrl } from '../utils/api.js';
+import { getBaseUrl } from '../utils/api';
 
 interface StatsModalProps {
   profile: UserProfile;

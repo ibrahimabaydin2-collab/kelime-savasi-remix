@@ -11,28 +11,28 @@ import {
   playCountdownBeepSound,
   suspendAudioContext,
   resumeAudioContext
-} from './utils/soundEffects.js';
-import GameBoard from './components/GameBoard.js';
-import BottomBar from './components/BottomBar.js';
-import Keyboard from './components/Keyboard.js';
-import StatsModal from './components/StatsModal.js';
-import MissionsModal from './components/MissionsModal.js';
-import WelcomeScreen from './components/WelcomeScreen.js';
-import GoldWallet from './components/GoldWallet.js';
-import SettingsModal, { AppSettings } from './components/SettingsModal.js';
-import AuthScreen from './components/AuthScreen.js';
-import BadgeUnlockedModal from './components/BadgeUnlockedModal.js';
-import ProgressDots from './components/ProgressDots.js';
-import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase.js';
+} from './utils/soundEffects';
+import GameBoard from './components/GameBoard';
+import BottomBar from './components/BottomBar';
+import Keyboard from './components/Keyboard';
+import StatsModal from './components/StatsModal';
+import MissionsModal from './components/MissionsModal';
+import WelcomeScreen from './components/WelcomeScreen';
+import GoldWallet from './components/GoldWallet';
+import SettingsModal, { AppSettings } from './components/SettingsModal';
+import AuthScreen from './components/AuthScreen';
+import BadgeUnlockedModal from './components/BadgeUnlockedModal';
+import ProgressDots from './components/ProgressDots';
+import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
-import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types.js';
-import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut } from 'lucide-react';
-import { getRandomWord, isWordInCuratedList, getDailyWordAndLength, COMMON_TURKISH_WORDS, CLEANED_TURKISH_WORDS } from './data/wordlist.js';
-import { turkishUpper, turkishLower, validateTurkishLinguistics } from './utils/turkish.js';
-import { getApiUrl, getWsUrl, validateWordClientSide } from './utils/api.js';
-import { calculateDynamicScore, verifyScoringAccuracy, getLevelForScore } from './utils/scoring.js';
-import { getCachedWord, setCachedWord } from './utils/wordCache.js';
-import { scheduleDailyNotifications } from './utils/notifications.js';
+import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types';
+import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut, Wifi, WifiOff } from 'lucide-react';
+import { getRandomWord, isWordInCuratedList, getDailyWordAndLength, COMMON_TURKISH_WORDS, CLEANED_TURKISH_WORDS } from './data/wordlist';
+import { turkishUpper, turkishLower, validateTurkishLinguistics } from './utils/turkish';
+import { getApiUrl, getWsUrl, validateWordClientSide } from './utils/api';
+import { calculateDynamicScore, verifyScoringAccuracy, getLevelForScore } from './utils/scoring';
+import { getCachedWord, setCachedWord } from './utils/wordCache';
+import { scheduleDailyNotifications } from './utils/notifications';
 
 const INITIAL_STATS = {
   gamesPlayed: 0,
@@ -909,6 +909,10 @@ export default function App() {
   };
 
   const handleWatchRewardedAdReward = async () => {
+    resumeAudioContext();
+    document.body.classList.remove('ad-active');
+    try { (window as any).AndroidBridge?.preventAdLayoutLoops?.(); } catch (e) {}
+
     const currentGold = profile.gold !== undefined ? profile.gold : 20;
     const updated = {
       ...profile,
@@ -1173,6 +1177,8 @@ export default function App() {
   }, []);
 
   const [isOnline, setIsOnline] = useState<boolean>(false);
+  const [wsLatency, setWsLatency] = useState<number | null>(null);
+  const lastPingTimestampRef = useRef<number | null>(null);
   const [reconnectCounter, setReconnectCounter] = useState<number>(0);
   const [lobbyPlayers, setLobbyPlayers] = useState<any[]>([]);
   const [activeChallenges, setActiveChallenges] = useState<any[]>([]);
@@ -1732,20 +1738,30 @@ export default function App() {
             }
           }
 
-          // Heartbeat ping every 10s (prevents mobile carrier NAT drops)
-          if (pingInterval) clearInterval(pingInterval);
-          pingInterval = setInterval(() => {
+          // Heartbeat ping every 4s (prevents mobile carrier NAT drops and keeps real-time latency updated)
+          const sendPing = () => {
             if (ws && ws.readyState === WebSocket.OPEN) {
+              lastPingTimestampRef.current = Date.now();
               ws.send(JSON.stringify({ type: 'ping' }));
             }
-          }, 10000);
+          };
+
+          sendPing();
+          if (pingInterval) clearInterval(pingInterval);
+          pingInterval = setInterval(sendPing, 4000);
         };
 
         ws.onmessage = (event) => {
           if (!isMounted) return;
           try {
             const data = JSON.parse(event.data);
-            if (data.type === 'lobby' || data.type === 'online_players') {
+            if (data.type === 'pong') {
+              if (lastPingTimestampRef.current) {
+                const latency = Date.now() - lastPingTimestampRef.current;
+                setWsLatency(latency);
+              }
+              return;
+            } else if (data.type === 'lobby' || data.type === 'online_players') {
               setLobbyPlayers(data.players || []);
             } else if (data.type === 'queued') {
               setMatchmakingStatus('queued');
@@ -1968,12 +1984,14 @@ export default function App() {
         ws.onerror = (error) => {
           console.warn('[WebSocket Manager] Error event:', error);
           addNetworkLog('error', 'Sunucu bağlantı hatası.');
+          setWsLatency(null);
         };
 
         ws.onclose = (event) => {
           if (!isMounted) return;
           console.log(`[WebSocket Manager] Connection closed (code: ${event.code})`);
           setIsOnline(false);
+          setWsLatency(null);
           socketRef.current = null;
           if (pingInterval) clearInterval(pingInterval);
 
@@ -2370,6 +2388,22 @@ export default function App() {
         if (winnerId) {
           handleInstantMatchEndRef.current(winnerId, payload);
         }
+      } else if (payload && (payload.type === 'challenge_received' || payload.dataType === 'challenge_received')) {
+        console.log('[FCM Challenge Push Listener] Challenge received:', payload);
+        const challengeId = payload.challengeId || payload.id;
+        if (challengeId) {
+          setActiveChallenges((prev) => {
+            if (prev.some((c) => c.id === challengeId)) return prev;
+            return [...prev, {
+              id: challengeId,
+              challengeId,
+              challengerName: payload.challengerName || 'Bir Arkadaşın',
+              wordLength: Number(payload.wordLength) || 5
+            }];
+          });
+          playEnterSound(settings.soundEnabled);
+          showToast(`⚔️ ${payload.challengerName || 'Bir arkadaşın'} sana meydan okudu!`, 'info');
+        }
       }
     };
 
@@ -2388,7 +2422,68 @@ export default function App() {
       window.removeEventListener('fcm_message', handlePushMessage as any);
       window.removeEventListener('push_notification', handlePushMessage as any);
     };
-  }, [profile.id]);
+  }, [profile.id, settings.soundEnabled]);
+
+  // Real-time Firestore listener for incoming challenges (where challengedId == profile.id & status == 'pending')
+  useEffect(() => {
+    if (!profile?.id) return;
+
+    const q = query(
+      collection(db, 'challenges'),
+      where('challengedId', '==', profile.id),
+      where('status', '==', 'pending')
+    );
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      const pending: any[] = [];
+      snapshot.forEach((docSnap) => {
+        pending.push({ id: docSnap.id, ...docSnap.data() });
+      });
+
+      setActiveChallenges((prev) => {
+        const newItems = pending.filter((p) => !prev.some((old) => old.id === p.id));
+        if (newItems.length > 0) {
+          playEnterSound(settings.soundEnabled);
+          const firstNew = newItems[0];
+          showToast(`⚔️ ${firstNew.challengerName || 'Bir arkadaşın'} sana meydan okudu!`, 'info');
+        }
+        return pending;
+      });
+    }, (err) => {
+      console.warn('[Firestore Incoming Challenge Listener Warning]:', err);
+    });
+
+    return () => unsub();
+  }, [profile?.id, settings.soundEnabled]);
+
+  // Real-time Firestore listener for sent challenges (where challengerId == profile.id)
+  useEffect(() => {
+    if (!profile?.id) return;
+
+    const q = query(
+      collection(db, 'challenges'),
+      where('challengerId', '==', profile.id)
+    );
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.status === 'accepted' && data.matchId) {
+          showToast(`🎉 Meydan okuma kabul edildi! Düello başlıyor...`, 'success');
+          playEnterSound(settings.soundEnabled);
+          deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
+          setHasEnteredGame(true);
+        } else if (data.status === 'declined') {
+          showToast(`❌ ${data.challengedName || 'Rakip'} meydan okumayı reddetti.`, 'error');
+          deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
+        }
+      });
+    }, (err) => {
+      console.warn('[Firestore Sent Challenge Listener Warning]:', err);
+    });
+
+    return () => unsub();
+  }, [profile?.id, settings.soundEnabled]);
 
   // Dynamically synchronize opponent's real profile (username & avatar) from Firestore via Real-Time Listener throughout the game
   useEffect(() => {
@@ -3748,38 +3843,130 @@ export default function App() {
   };
 
   // Handle Multiplayer Challenge Actions
-  const handleChallengePlayer = (player: any, length: number) => {
-    if (!isOnline || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      showToast('Meydan okumak için sunucuya bağlı olmalısınız.', 'error');
+  const handleChallengePlayer = async (player: any, length: number) => {
+    if (!profile?.id) {
+      showToast('Meydan okumak için giriş yapmış olmalısınız.', 'error');
       return;
     }
-    socketRef.current.send(JSON.stringify({
-      type: 'challenge',
-      challengedId: player.id,
-      wordLength: length
-    }));
-    showToast(`${player.name} oyuncusuna meydan okundu, yanıt bekleniyor...`, 'info');
-  };
 
-  const handleAcceptChallenge = (challengeId: string) => {
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({
-        type: 'challenge_respond',
-        challengeId,
-        accept: true
-      }));
-      setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
+    const challengeId = 'chal_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const challengeData = {
+      id: challengeId,
+      challengeId,
+      challengerId: profile.id,
+      challengerName: profile.name || 'Savaşçı',
+      challengerAvatar: profile.avatarUrl || '🧠',
+      challengedId: player.id,
+      challengedName: player.name || 'Oyuncu',
+      wordLength: length,
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      // 1. Write challenge document to Firestore
+      await setDoc(doc(db, 'challenges', challengeId), challengeData);
+
+      // 2. Send via WebSocket if connected
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'challenge',
+          ...challengeData
+        }));
+      }
+
+      // 3. Trigger FCM Push Notification
+      fetch(getApiUrl('/api/send-challenge-notification'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          challengedId: player.id,
+          challengerName: profile.name || 'Bir arkadaşın',
+          wordLength: length,
+          challengeId
+        })
+      }).catch(() => {});
+
+      showToast(`⚔️ ${player.name} oyuncusuna meydan okundu! Yanıt bekleniyor...`, 'info');
+    } catch (err) {
+      console.error('[Challenge Error]:', err);
+      showToast('Meydan okuma gönderilemedi.', 'error');
     }
   };
 
-  const handleDeclineChallenge = (challengeId: string) => {
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({
-        type: 'challenge_respond',
-        challengeId,
-        accept: false
-      }));
+  const handleAcceptChallenge = async (challengeId: string, challengeObj?: any) => {
+    try {
+      const targetData = challengeObj || activeChallenges.find(c => c.id === challengeId);
+      const targetLength = targetData?.wordLength || duelWordLength || 5;
+
+      // 1. Send WebSocket response
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'challenge_respond',
+          challengeId,
+          accept: true,
+          challenge: targetData
+        }));
+      }
+
+      // 2. Direct match creation fallback for instant start
+      const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      const correctWord = turkishUpper(getRandomWord(targetLength, true));
+
+      const challengerId = targetData?.challengerId || 'p1';
+      const challengerName = targetData?.challengerName || 'Savaşçı';
+      const challengerAvatar = targetData?.challengerAvatar || '';
+
+      const currentUid = profile.id;
+      const currentName = profile.name || 'Savaşçı';
+      const currentAvatar = profile.avatarUrl || '';
+
+      const initialFirestoreMatch = {
+        id: matchId,
+        matchId,
+        wordLength: targetLength,
+        targetWord: correctWord,
+        correctWord,
+        gameState: 'PLAYING',
+        status: 'playing',
+        createdAt: new Date().toISOString(),
+        player1: { id: challengerId, name: challengerName, avatarUrl: challengerAvatar },
+        player2: { id: currentUid, name: currentName, avatarUrl: currentAvatar },
+        players: {
+          [challengerId]: { id: challengerId, name: challengerName, avatarUrl: challengerAvatar, attempts: [], completed: false, won: false },
+          [currentUid]: { id: currentUid, name: currentName, avatarUrl: currentAvatar, attempts: [], completed: false, won: false }
+        },
+        isGameOver: false,
+        winner: null
+      };
+
+      await setDoc(doc(db, 'matches', matchId), initialFirestoreMatch, { merge: true });
+      await setDoc(doc(db, 'rooms', matchId), initialFirestoreMatch, { merge: true });
+      await setDoc(doc(db, 'challenges', challengeId), { status: 'accepted', matchId }, { merge: true });
+
       setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
+      setActiveMatch(initialFirestoreMatch);
+      setHasEnteredGame(true);
+      showToast('Meydan okuma kabul edildi! Düello başlıyor...', 'success');
+    } catch (err) {
+      console.error('[Accept Challenge Error]:', err);
+    }
+  };
+
+  const handleDeclineChallenge = async (challengeId: string) => {
+    try {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'challenge_respond',
+          challengeId,
+          accept: false
+        }));
+      }
+      await setDoc(doc(db, 'challenges', challengeId), { status: 'declined' }, { merge: true });
+      setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
+      showToast('Meydan okuma reddedildi.', 'info');
+    } catch (err) {
+      console.error('[Decline Challenge Error]:', err);
     }
   };
 
@@ -3857,7 +4044,10 @@ export default function App() {
       }
     }
 
-    const targetLen = matchWordsCount || duelWordLength || 5;
+    const targetLen = Number(matchWordsCount || duelWordLength || 5);
+    if (matchWordsCount && matchWordsCount !== duelWordLength) {
+      setDuelWordLength(targetLen);
+    }
 
     // Send WebSocket join if available
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -3892,7 +4082,7 @@ export default function App() {
         username: selfName,
         displayName: selfName,
         avatarUrl: selfAvatar,
-        wordLength: targetLen,
+        wordLength: Number(targetLen),
         status: 'waiting',
         createdAt: serverTimestamp(),
         updatedAt: new Date().toISOString()
@@ -3906,7 +4096,7 @@ export default function App() {
           const data = snap.data();
           if (data.status === 'matched' && data.matchId) {
             console.log("[Firestore Matchmaking] Matched via Firestore snapshot! Match ID:", data.matchId);
-            const matchLen = data.wordLength || targetLen;
+            const matchLen = Number(data.wordLength || targetLen);
             const word = data.correctWord || data.targetWord;
             
             const activeProfile = { ...profile, id: currentUid, name: selfName };
@@ -3959,7 +4149,11 @@ export default function App() {
       );
 
       const querySnap = await getDocs(q);
-      const waitingDocs = querySnap.docs.filter(d => d.id !== currentUid && d.id !== profile.id);
+      const waitingDocs = querySnap.docs.filter(d => {
+        if (d.id === currentUid || d.id === profile.id) return false;
+        const dData = d.data();
+        return Number(dData.wordLength) === Number(targetLen);
+      });
 
       if (waitingDocs.length > 0) {
         const oppDoc = waitingDocs[0];
@@ -4534,7 +4728,7 @@ export default function App() {
 
                 {/* Top Header Row */}
                 <div className="flex justify-between items-center mb-2 px-0.5 pb-1.5 border-b border-white/10">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 sm:gap-2">
                     <span className="relative flex h-2.5 w-2.5">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                       <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
@@ -4548,14 +4742,66 @@ export default function App() {
                     </span>
                   </div>
 
-                  <button
-                    onClick={handleLeaveMatch}
-                    className="flex items-center gap-1 text-[10px] font-extrabold bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 px-2.5 py-1 rounded-lg transition active:scale-95 cursor-pointer"
-                    title="Düellodan Çık"
-                  >
-                    <LogOut size={12} />
-                    <span>Çık</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {/* Real-time WebSocket Signal Strength Icon & Latency Indicator */}
+                    <div 
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-black/50 border border-white/10 text-[10px] font-mono select-none transition-all duration-300"
+                      title={!isOnline ? "Sunucu Bağlantısı Kesildi" : wsLatency !== null ? `Canlı Sunucu Gecikmesi: ${wsLatency} ms (${wsLatency < 80 ? 'Mükemmel' : wsLatency < 180 ? 'İyi' : wsLatency < 350 ? 'Orta' : 'Yüksek Gecikme'})` : "Gecikme Ölçülüyor..."}
+                    >
+                      {/* Signal Strength 4-Bar Icon */}
+                      <div className="flex items-end gap-[2px] h-3 w-3.5 pb-[1px]">
+                        {[1, 2, 3, 4].map((bar) => {
+                          let activeBars = 0;
+                          let barBg = 'bg-emerald-400';
+                          if (!isOnline) {
+                            activeBars = 0;
+                          } else if (wsLatency === null) {
+                            activeBars = 1;
+                            barBg = 'bg-amber-400';
+                          } else if (wsLatency < 80) {
+                            activeBars = 4;
+                            barBg = 'bg-emerald-400';
+                          } else if (wsLatency < 180) {
+                            activeBars = 3;
+                            barBg = 'bg-emerald-400';
+                          } else if (wsLatency < 350) {
+                            activeBars = 2;
+                            barBg = 'bg-amber-400';
+                          } else {
+                            activeBars = 1;
+                            barBg = 'bg-rose-400';
+                          }
+
+                          const isLit = bar <= activeBars;
+                          const heights = ['h-[30%]', 'h-[52%]', 'h-[76%]', 'h-[100%]'];
+                          return (
+                            <span
+                              key={bar}
+                              className={`w-[2.5px] rounded-xs transition-all duration-300 ${heights[bar - 1]} ${
+                                isLit ? barBg : 'bg-white/20'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+
+                      {/* Latency MS Value */}
+                      <span className={`font-bold text-[9.5px] font-mono tracking-tight ${
+                        !isOnline ? 'text-rose-400' : wsLatency === null ? 'text-amber-400 font-normal' : wsLatency < 180 ? 'text-emerald-400' : wsLatency < 350 ? 'text-amber-400' : 'text-rose-400'
+                      }`}>
+                        {!isOnline ? 'Offline' : wsLatency !== null ? `${wsLatency} ms` : '...'}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={handleLeaveMatch}
+                      className="flex items-center gap-1 text-[10px] font-extrabold bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 px-2.5 py-1 rounded-lg transition active:scale-95 cursor-pointer"
+                      title="Düellodan Çık"
+                    >
+                      <LogOut size={12} />
+                      <span>Çık</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Scoreboard Players Grid */}
@@ -4802,6 +5048,8 @@ export default function App() {
                 onClick={async () => {
                   if (typeof window !== 'undefined' && (window as any).AndroidBridge && (window as any).AndroidBridge.showRewardedAd) {
                     try {
+                      suspendAudioContext();
+                      document.body.classList.add('ad-active');
                       (window as any).AndroidBridge.showRewardedAd();
                     } catch (e) {
                       await handleWatchRewardedAdReward();
@@ -5473,6 +5721,64 @@ export default function App() {
         onClose={() => setUnlockedBadgeToShow(null)}
         soundEnabled={settings.soundEnabled}
       />
+
+      {/* Live Incoming Challenge Popup Modal */}
+      {activeChallenges && activeChallenges.length > 0 && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 animate-fadeIn">
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md transition-opacity duration-200" />
+          
+          {/* Modal Container */}
+          <div className="bg-[#161D2B] border-2 border-amber-500/50 rounded-3xl p-6 max-w-sm w-full shadow-[0_0_50px_rgba(245,158,11,0.3)] relative z-10 overflow-hidden text-white animate-scaleUp">
+            {/* Atmospheric glows */}
+            <div className="absolute -top-12 -right-12 w-32 h-32 bg-amber-500/20 rounded-full blur-2xl pointer-events-none" />
+            <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-emerald-500/20 rounded-full blur-2xl pointer-events-none" />
+
+            {/* Content */}
+            <div className="relative z-10 text-center space-y-4">
+              {/* Badge Icon */}
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 via-yellow-400 to-amber-500 p-0.5 mx-auto shadow-xl shadow-amber-500/30 animate-pulse">
+                <div className="w-full h-full bg-[#161D2B] rounded-[14px] flex items-center justify-center text-amber-400">
+                  <Swords size={32} className="stroke-[2.5]" />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="inline-block text-[10px] font-black uppercase tracking-widest text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1 rounded-full font-mono">
+                  ⚔️ YENİ MEYDAN OKUMA!
+                </span>
+                
+                <h3 className="text-lg font-black text-white tracking-wide mt-2">
+                  {activeChallenges[0].challengerName || 'Bir Oyuncu'}
+                </h3>
+                
+                <p className="text-xs text-gray-300 leading-relaxed font-medium">
+                  Seni <span className="text-amber-400 font-black font-mono">{activeChallenges[0].wordLength || 5} Harfli</span> kelime düellosuna davet ediyor!
+                </p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={() => handleDeclineChallenge(activeChallenges[0].id)}
+                  className="flex-1 py-3 px-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 text-xs font-black uppercase tracking-wider transition active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <X size={16} />
+                  Reddet
+                </button>
+                
+                <button
+                  onClick={() => handleAcceptChallenge(activeChallenges[0].id, activeChallenges[0])}
+                  className="flex-1 py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 text-white text-xs font-black uppercase tracking-wider border border-emerald-400/50 shadow-lg shadow-emerald-500/25 hover:brightness-110 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <Swords size={16} />
+                  Kabul Et
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Custom Premium Confirmation Modal */}
       {confirmModal.isOpen && (

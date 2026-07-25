@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Sparkles, Swords, User } from 'lucide-react';
-import { UserProfile } from '../types.js';
-import { validateUsername } from '../utils/usernameValidation.js';
-import { checkUsernameExists } from '../lib/firebase.js';
+import { UserProfile } from '../types';
+import { validateUsername } from '../utils/usernameValidation';
+import { checkUsernameExists } from '../lib/firebase';
 
 interface FirstTimeSetupProps {
   profile: UserProfile;

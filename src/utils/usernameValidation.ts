@@ -1,4 +1,4 @@
-import { turkishLower } from './turkish.js';
+import { turkishLower } from './turkish';
 
 /**
  * Validates a username based on the game's strict criteria.
