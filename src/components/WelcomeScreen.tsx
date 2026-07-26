@@ -880,7 +880,7 @@ export default function WelcomeScreen({
                   </span>
                 </div>
                 <p className="text-[11px] text-gray-300 leading-snug font-sans">
-                  Gerçek zamanlı bir rakiple aynı gizli kelimeyi en az denemede ve en hızlı şekilde tahmin etmek için yarışın. Kazanan +100 Savaş Puanı kazanır!
+                  Gerçek zamanlı bir rakiple aynı gizli kelimeyi en az denemede ve en hızlı şekilde tahmin etmek için yarışın.
                 </p>
               </div>
 
@@ -1539,7 +1539,7 @@ export default function WelcomeScreen({
                   <span>5. Canlı Düellolar</span>
                 </div>
                 <p className="text-[11px] leading-normal text-gray-300">
-                  Arkadaşlarınızla lobide buluşarak veya rastgele eşleşme ile canlı düello başlatabilirsiniz. İki taraf da aynı gizli kelimeyi çözmeye çalışır. Kelimeyi en az denemede ve en kısa sürede çözen taraf düelloyu kazanır ve hanesine devasa <strong className="text-amber-400">+100 Savaş Puanı</strong> yazdırır!
+                  Arkadaşlarınızla lobide buluşarak veya rastgele eşleşme ile canlı düello başlatabilirsiniz. İki taraf da aynı gizli kelimeyi çözmeye çalışır. Kelimeyi en az denemede ve en kısa sürede çözen taraf düelloyu kazanır!
                 </p>
               </div>
             </div>

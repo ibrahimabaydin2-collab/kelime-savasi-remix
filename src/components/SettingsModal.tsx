@@ -20,7 +20,8 @@ import {
   Key, 
   Bell, 
   Sparkles,
-  Wifi
+  Wifi,
+  LogOut
 } from 'lucide-react';
 import { UserProfile, NetworkLogEntry } from '../types';
 import { validateUsername, validatePassword } from '../utils/usernameValidation';
@@ -28,6 +29,7 @@ import PrivacyPolicyModal from './PrivacyPolicyModal';
 import { 
   auth, 
   db,
+  signOutUser,
   linkGuestToEmailAndPassword, 
   sendVerificationEmail,
   linkGuestWithGoogle,
@@ -59,6 +61,7 @@ interface SettingsModalProps {
   onUpdateProfile: (name: string, avatarUrl?: string) => void;
   networkLogs?: NetworkLogEntry[];
   onReconnect?: () => void;
+  onSignOut?: () => void;
 }
 
 type TabType = 'account' | 'appearance' | 'preferences';
@@ -73,7 +76,8 @@ export default function SettingsModal({
   profile,
   onUpdateProfile,
   networkLogs = [],
-  onReconnect
+  onReconnect,
+  onSignOut
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>('account');
   const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
@@ -83,6 +87,34 @@ export default function SettingsModal({
   const [isTouched, setIsTouched] = useState<boolean>(false);
   const [dbUsernameError, setDbUsernameError] = useState<string | null>(null);
   const [isCheckingName, setIsCheckingName] = useState<boolean>(false);
+  const [isSigningOut, setIsSigningOut] = useState<boolean>(false);
+  const [confirmSignOut, setConfirmSignOut] = useState<boolean>(false);
+
+  const handleSignOutAction = async () => {
+    setIsSigningOut(true);
+    try {
+      if (onSignOut) {
+        await onSignOut();
+      } else {
+        try {
+          window.localStorage.removeItem('kelimesavasi_profile');
+          window.localStorage.removeItem('saved_username');
+          window.localStorage.removeItem('kelimesavasi_is_registered');
+          window.localStorage.removeItem('kelimesavasi_entered');
+          window.localStorage.removeItem('kelimesavasi_signing_in');
+          window.localStorage.removeItem('pending_restoration_profile');
+          window.localStorage.setItem('kelimesavasi_just_signed_out', 'true');
+        } catch (e) {}
+        await signOutUser();
+        onClose();
+      }
+    } catch (err) {
+      console.error('Sign out error:', err);
+    } finally {
+      setIsSigningOut(false);
+      setConfirmSignOut(false);
+    }
+  };
 
   // Account Security state
   const [secureEmail, setSecureEmail] = useState<string>('');
@@ -926,6 +958,50 @@ export default function SettingsModal({
                 )}
               </div>
 
+              {/* Card 3: Oturum Yönetimi & Çıkış Yap */}
+              <div className="inner-theme border border-rose-500/30 bg-rose-500/10 rounded-2xl p-4.5 space-y-3 text-left shadow-md">
+                <h4 className="text-xs font-bold text-rose-300 uppercase tracking-wider flex items-center gap-2">
+                  <LogOut size={14} className="text-rose-400" />
+                  Oturum Yönetimi
+                </h4>
+                <p className="text-[11px] text-gray-300 leading-normal">
+                  Mevcut oyuncu hesabınızdan çıkış yaparak giriş / kayıt ekranına dönebilirsiniz.
+                </p>
+                {!confirmSignOut ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmSignOut(true)}
+                    className="w-full py-3 px-4 bg-rose-600 hover:bg-rose-500 text-white text-xs font-black rounded-xl shadow-md transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2 uppercase tracking-wider cursor-pointer border border-rose-400/40"
+                  >
+                    <LogOut size={15} />
+                    <span>Çıkış Yap</span>
+                  </button>
+                ) : (
+                  <div className="p-3 bg-black/40 border border-rose-500/40 rounded-xl space-y-2">
+                    <p className="text-xs font-bold text-rose-200 text-center">Hesabınızdan çıkış yapılsın mı?</p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSignOutAction}
+                        disabled={isSigningOut}
+                        className="flex-1 py-2.5 px-3 bg-rose-600 hover:bg-rose-500 text-white text-xs font-black rounded-lg transition active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                      >
+                        <LogOut size={14} />
+                        <span>{isSigningOut ? 'Çıkış Yapılıyor...' : 'Evet, Çıkış Yap'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmSignOut(false)}
+                        disabled={isSigningOut}
+                        className="px-3 py-2.5 bg-white/10 hover:bg-white/20 text-gray-200 text-xs font-bold rounded-lg transition cursor-pointer"
+                      >
+                        Vazgeç
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
 
@@ -1213,7 +1289,40 @@ export default function SettingsModal({
         </div>
 
         {/* Sticky Footer (Kaydet ve Kapat) */}
-        <div className="flex-none px-6 py-4.5 border-t border-white/5 bg-black/15 flex items-center justify-end gap-3 rounded-b-[2.2rem]">
+        <div className="flex-none px-6 py-4.5 border-t border-white/5 bg-black/15 flex items-center justify-between gap-3 rounded-b-[2.2rem]">
+          {!confirmSignOut ? (
+            <button
+              type="button"
+              onClick={() => setConfirmSignOut(true)}
+              disabled={isSigningOut}
+              className="px-4 py-2.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-bold rounded-xl transition flex items-center gap-1.5 cursor-pointer active:scale-95 shrink-0"
+              title="Hesaptan Çıkış Yap"
+            >
+              <LogOut size={14} />
+              <span>Çıkış Yap</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleSignOutAction}
+                disabled={isSigningOut}
+                className="px-3.5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-black rounded-xl transition flex items-center gap-1.5 cursor-pointer active:scale-95 shrink-0 shadow-md"
+              >
+                <LogOut size={13} />
+                <span>{isSigningOut ? 'Çıkış...' : 'Onayla'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmSignOut(false)}
+                disabled={isSigningOut}
+                className="px-3 py-2.5 bg-white/10 hover:bg-white/20 text-gray-200 text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                Vazgeç
+              </button>
+            </div>
+          )}
+
           <button
             onClick={() => {
               if (handleSaveProfile()) {

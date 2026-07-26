@@ -317,6 +317,109 @@ const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?
   };
 };
 
+function MatchStartOverlay({
+  activeMatch,
+  profile,
+  onStartGame
+}: {
+  activeMatch: any;
+  profile: any;
+  onStartGame: () => void;
+}) {
+  const [countdown, setCountdown] = useState<number>(3);
+
+  const selfId = profile?.id;
+  const activeProfile = { ...profile, id: selfId };
+  const resolved = resolveDuelPlayers(activeMatch?.player1, activeMatch?.player2, activeProfile, activeMatch?.players);
+  const p1 = resolved.player1 || { name: profile?.name || 'Sen', avatarUrl: profile?.avatarUrl || '🧠' };
+  const p2 = resolved.player2 || { name: 'Rakip', avatarUrl: '⚔️' };
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          onStartGame();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [onStartGame]);
+
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-xl text-[#FAF6E9] p-4 select-none animate-fade-in">
+      {/* Top Banner */}
+      <div className="text-center space-y-2 mb-8">
+        <span className="px-4 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-mono font-bold uppercase tracking-widest animate-pulse inline-block">
+          ⚔️ DÜELLO EŞLEŞTİ — OYUN BAŞLIYOR
+        </span>
+        <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+          {activeMatch?.wordLength || 5} Harfli Kelime Düellosu
+        </h2>
+        <p className="text-xs sm:text-sm text-slate-300">
+          İki oyuncu da hazır. Düello başlatılıyor!
+        </p>
+      </div>
+
+      {/* Versus Cards Container */}
+      <div className="flex items-center justify-center gap-3 sm:gap-8 w-full max-w-md my-4">
+        {/* Player 1 Card */}
+        <div className="flex-1 flex flex-col items-center p-4 rounded-2xl bg-slate-900/90 border border-slate-700/80 shadow-2xl relative overflow-hidden">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-300 p-0.5 shadow-lg mb-3">
+            <div className="w-full h-full rounded-[14px] bg-slate-950 flex items-center justify-center text-3xl sm:text-4xl">
+              {p1.avatarUrl || '🧠'}
+            </div>
+          </div>
+          <span className="font-bold text-sm sm:text-base text-white text-center truncate max-w-[110px]">
+            {p1.name || 'Oyuncu 1'}
+          </span>
+          <span className="mt-2 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+            HAZIR ✓
+          </span>
+        </div>
+
+        {/* Center VS & Countdown Badge */}
+        <div className="flex flex-col items-center justify-center shrink-0">
+          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg text-white font-black text-lg sm:text-xl border-2 border-amber-300/40 animate-pulse">
+            VS
+          </div>
+          <div className="mt-4 flex flex-col items-center">
+            <span className="text-4xl sm:text-5xl font-black text-amber-400 font-mono tracking-tighter animate-bounce">
+              {countdown > 0 ? countdown : '🚀'}
+            </span>
+            <span className="text-[10px] text-slate-400 font-bold uppercase mt-1">
+              {countdown > 0 ? 'Saniye' : 'Başlıyor!'}
+            </span>
+          </div>
+        </div>
+
+        {/* Player 2 Card */}
+        <div className="flex-1 flex flex-col items-center p-4 rounded-2xl bg-slate-900/90 border border-slate-700/80 shadow-2xl relative overflow-hidden">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-gradient-to-tr from-blue-500 to-cyan-300 p-0.5 shadow-lg mb-3">
+            <div className="w-full h-full rounded-[14px] bg-slate-950 flex items-center justify-center text-3xl sm:text-4xl">
+              {p2.avatarUrl || '⚔️'}
+            </div>
+          </div>
+          <span className="font-bold text-sm sm:text-base text-white text-center truncate max-w-[110px]">
+            {p2.name || 'Rakip'}
+          </span>
+          <span className="mt-2 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+            HAZIR ✓
+          </span>
+        </div>
+      </div>
+
+      {/* Bottom Status Message */}
+      <div className="mt-8 text-center text-xs text-slate-400 font-medium">
+        Aynı kelimeyi ilk doğru tahmin eden kazanır!
+      </div>
+    </div>
+  );
+}
+
 function generateDeviceFingerprint(): string {
   if (typeof window === 'undefined') return 'server';
   const nav = (window.navigator || {}) as any;
@@ -1608,6 +1711,19 @@ export default function App() {
         } else {
           if (active) {
             setFirebaseUser(null);
+            const justSignedOut = safeLocalStorage.getItem('kelimesavasi_just_signed_out') === 'true';
+            if (justSignedOut) {
+              console.log('Explicit sign-out detected. Preventing auto guest re-login...');
+              safeLocalStorage.removeItem('kelimesavasi_just_signed_out');
+              setProfile(null as any);
+              if (active) {
+                resolved = true;
+                setAuthLoading(false);
+                clearTimeout(timeoutId);
+              }
+              return;
+            }
+
             const savedUsername = safeLocalStorage.getItem('saved_username');
             const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
             const isRegisteredUser = safeLocalStorage.getItem('kelimesavasi_is_registered') === 'true';
@@ -1625,8 +1741,9 @@ export default function App() {
                 }
               }
             } else {
-              // Truly new visitor. Stop loading and show registration/login.
-              if (active && !resolved) {
+              // Truly new visitor or signed out. Stop loading and show registration/login.
+              setProfile(null as any);
+              if (active) {
                 resolved = true;
                 setAuthLoading(false);
                 clearTimeout(timeoutId);
@@ -2156,6 +2273,64 @@ export default function App() {
     setIsValidating(false);
   };
 
+  const handleSignOut = async () => {
+    try {
+      safeLocalStorage.removeItem('kelimesavasi_profile');
+      safeLocalStorage.removeItem('saved_username');
+      safeLocalStorage.removeItem('kelimesavasi_is_registered');
+      safeLocalStorage.removeItem('kelimesavasi_entered');
+      safeLocalStorage.removeItem('kelimesavasi_signing_in');
+      safeLocalStorage.removeItem('pending_restoration_profile');
+      safeLocalStorage.setItem('kelimesavasi_just_signed_out', 'true');
+
+      setShowSettingsModal(false);
+      setHasEnteredGame(false);
+      setGameStatus('idle');
+      setActiveMatch(null);
+      setProfile(null as any);
+      setFirebaseUser(null);
+
+      await signOutUser();
+      showToast('Hesabınızdan başarıyla çıkış yapıldı.', 'info');
+    } catch (err) {
+      console.error('Sign out error:', err);
+      showToast('Çıkış yapılırken bir hata oluştu.', 'error');
+    }
+  };
+
+  // Synchronously launch the active 1v1 match after ready check / countdown
+  const handleStartMatchedGame = useCallback(() => {
+    const matchObj = activeMatchRef.current || activeMatch;
+    if (!matchObj) return;
+
+    const matchLen = Number(matchObj.wordLength || wordLength || 5);
+    const target = turkishUpper(matchObj.targetWord || matchObj.correctWord || targetWord || '');
+
+    if (target) {
+      setTargetWord(target);
+    }
+    setWordLength(matchLen);
+    setAttempts([]);
+    setCurrentAttempt('');
+    setLetterStatuses({});
+    setGameStatus('playing');
+    setHasEnteredGame(true);
+    setMatchmakingStatus('idle');
+    setIsMatchmakingLocked(false);
+    setOpponentLeftDuringMatch(false);
+    setShowCongratsModal(false);
+
+    setActiveMatch((prev: any) => ({
+      ...prev,
+      gameState: 'PLAYING',
+      status: 'playing',
+      targetWord: target || prev?.targetWord || prev?.correctWord || '',
+      correctWord: target || prev?.targetWord || prev?.correctWord || ''
+    }));
+
+    playEnterSound(settings.soundEnabled);
+  }, [wordLength, targetWord, settings.soundEnabled, activeMatch]);
+
   // Clean up and reset game state when leaving the game screen
   useEffect(() => {
     if (!hasEnteredGame) {
@@ -2298,8 +2473,7 @@ export default function App() {
     if (isSelfWinner) {
       showToast('TEBRİKLER! Savaşı Kazandın!', 'success');
       unlockBadge('gladiator');
-      // HARD LIMIT: Award 5 points for winning a duel (never exceed 5 points per match)
-      updateDailyScore(5);
+      // Live duel win (no daily score points awarded for duel matches)
       triggerVictoryCelebration(settings.soundEnabled);
     } else if (serverWinnerUserId === 'draw') {
       showToast('Düello berabere sona erdi!', 'info');
@@ -2466,13 +2640,64 @@ export default function App() {
     );
 
     const unsub = onSnapshot(q, (snapshot) => {
-      snapshot.forEach((docSnap) => {
+      snapshot.forEach(async (docSnap) => {
         const data = docSnap.data();
         if (data.status === 'accepted' && data.matchId) {
           showToast(`🎉 Meydan okuma kabul edildi! Düello başlıyor...`, 'success');
           playEnterSound(settings.soundEnabled);
+
+          const matchId = data.matchId;
+          const defaultLen = Number(data.wordLength || 5);
+
+          let matchPayload = data.matchPayload;
+          if (!matchPayload) {
+            try {
+              const matchSnap = await getDoc(doc(db, 'matches', matchId));
+              if (matchSnap.exists()) {
+                matchPayload = matchSnap.data();
+              }
+            } catch (e) {
+              console.warn('[Sent Challenge Listener] Error fetching match doc:', e);
+            }
+          }
+
+          const target = turkishUpper(matchPayload?.targetWord || matchPayload?.correctWord || data.targetWord || data.correctWord || '');
+          const matchLen = Number(matchPayload?.wordLength || defaultLen);
+
+          if (target) {
+            setTargetWord(target);
+          }
+          setWordLength(matchLen);
+          setAttempts([]);
+          setCurrentAttempt('');
+          setLetterStatuses({});
+          setMatchmakingStatus('idle');
+          setIsMatchmakingLocked(false);
+          setOpponentLeftDuringMatch(false);
+          setShowCongratsModal(false);
+
+          const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(
+            matchPayload?.player1,
+            matchPayload?.player2,
+            profile,
+            matchPayload?.players
+          );
+
+          setActiveMatch({
+            ...(matchPayload || {}),
+            id: matchId,
+            matchId: matchId,
+            gameState: 'READY',
+            status: 'waiting_ready',
+            targetWord: target,
+            correctWord: target,
+            wordLength: matchLen,
+            player1: p1,
+            player2: p2,
+            players: parsedPlayers
+          });
+
           deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
-          setHasEnteredGame(true);
         } else if (data.status === 'declined') {
           showToast(`❌ ${data.challengedName || 'Rakip'} meydan okumayı reddetti.`, 'error');
           deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
@@ -2626,7 +2851,7 @@ export default function App() {
     
     const processRoomSnapshotData = (data: any) => {
       if (!data) return;
-      if (!hasEnteredGameRef.current || !activeMatchRef.current) return;
+      if (!activeMatchRef.current) return;
 
       setActiveMatch((prev: any) => {
         const base = prev || {
@@ -2688,6 +2913,7 @@ export default function App() {
 
       if (data.gameState === 'PLAYING' || data.status === 'playing') {
         setHasEnteredGame((prev) => (prev ? prev : true));
+        setGameStatus('playing');
         if (data.targetWord || data.correctWord) {
           const newTarget = turkishUpper(data.targetWord || data.correctWord);
           setTargetWord((prev) => (prev === newTarget ? prev : newTarget));
@@ -3897,19 +4123,8 @@ export default function App() {
   const handleAcceptChallenge = async (challengeId: string, challengeObj?: any) => {
     try {
       const targetData = challengeObj || activeChallenges.find(c => c.id === challengeId);
-      const targetLength = targetData?.wordLength || duelWordLength || 5;
+      const targetLength = Number(targetData?.wordLength || duelWordLength || 5);
 
-      // 1. Send WebSocket response
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({
-          type: 'challenge_respond',
-          challengeId,
-          accept: true,
-          challenge: targetData
-        }));
-      }
-
-      // 2. Direct match creation fallback for instant start
       const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
       const correctWord = turkishUpper(getRandomWord(targetLength, true));
 
@@ -3927,8 +4142,8 @@ export default function App() {
         wordLength: targetLength,
         targetWord: correctWord,
         correctWord,
-        gameState: 'PLAYING',
-        status: 'playing',
+        gameState: 'READY',
+        status: 'waiting_ready',
         createdAt: new Date().toISOString(),
         player1: { id: challengerId, name: challengerName, avatarUrl: challengerAvatar },
         player2: { id: currentUid, name: currentName, avatarUrl: currentAvatar },
@@ -3940,14 +4155,60 @@ export default function App() {
         winner: null
       };
 
+      // 1. Create match documents in Firestore first
       await setDoc(doc(db, 'matches', matchId), initialFirestoreMatch, { merge: true });
       await setDoc(doc(db, 'rooms', matchId), initialFirestoreMatch, { merge: true });
-      await setDoc(doc(db, 'challenges', challengeId), { status: 'accepted', matchId }, { merge: true });
+      await setDoc(doc(db, 'challenges', challengeId), {
+        status: 'accepted',
+        matchId,
+        wordLength: targetLength,
+        targetWord: correctWord,
+        correctWord,
+        matchPayload: initialFirestoreMatch
+      }, { merge: true });
+
+      // 2. Send WebSocket response
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'challenge_respond',
+          challengeId,
+          accept: true,
+          matchId,
+          wordLength: targetLength,
+          correctWord,
+          targetWord: correctWord,
+          challenge: targetData,
+          matchPayload: initialFirestoreMatch
+        }));
+      }
 
       setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
-      setActiveMatch(initialFirestoreMatch);
-      setHasEnteredGame(true);
-      showToast('Meydan okuma kabul edildi! Düello başlıyor...', 'success');
+
+      setTargetWord(correctWord);
+      setWordLength(targetLength);
+      setAttempts([]);
+      setCurrentAttempt('');
+      setLetterStatuses({});
+      setMatchmakingStatus('idle');
+      setIsMatchmakingLocked(false);
+      setOpponentLeftDuringMatch(false);
+      setShowCongratsModal(false);
+
+      const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(
+        initialFirestoreMatch.player1,
+        initialFirestoreMatch.player2,
+        profile,
+        initialFirestoreMatch.players
+      );
+
+      setActiveMatch({
+        ...initialFirestoreMatch,
+        player1: p1,
+        player2: p2,
+        players: parsedPlayers
+      });
+
+      showToast('Meydan okuma kabul edildi! Düello hazırlanıyor...', 'success');
     } catch (err) {
       console.error('[Accept Challenge Error]:', err);
     }
@@ -4110,8 +4371,8 @@ export default function App() {
             setActiveMatch({
               id: data.matchId,
               matchId: data.matchId,
-              gameState: 'PLAYING',
-              status: 'playing',
+              gameState: 'READY',
+              status: 'waiting_ready',
               targetWord: word,
               correctWord: word,
               player1: p1,
@@ -4124,11 +4385,9 @@ export default function App() {
             setAttempts([]);
             setCurrentAttempt('');
             setLetterStatuses({});
-            setGameStatus('playing');
-            setHasEnteredGame(true);
             setMatchmakingStatus('idle');
             setIsMatchmakingLocked(false);
-            showToast('Düello başladı! Aynı kelimeyi ilk bulan kazanır! ⚡', 'success');
+            showToast('Eşleşme bulundu! Düello hazırlanıyor... ⚡', 'success');
 
             deleteDoc(myQueueRef).catch(() => {});
             if (queueUnsubscribeRef.current) {
@@ -4457,6 +4716,15 @@ export default function App() {
             <AlertCircle size={16} />
             <span>{toast.message}</span>
           </div>
+        )}
+
+        {/* Match Start Overlay */}
+        {activeMatch && (activeMatch.gameState === 'WAITING' || activeMatch.gameState === 'READY') && (
+          <MatchStartOverlay
+            activeMatch={activeMatch}
+            profile={profile}
+            onStartGame={handleStartMatchedGame}
+          />
         )}
 
         {authLoading ? (
@@ -5712,6 +5980,7 @@ export default function App() {
           onUpdateProfile={handleUpdateProfile}
           networkLogs={networkLogs}
           onReconnect={handleManualReconnect}
+          onSignOut={handleSignOut}
         />
       )}
 

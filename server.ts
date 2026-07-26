@@ -1427,7 +1427,7 @@ async function startServer() {
 
             // State 3: PLAYING (Synchronized start)
             setTimeout(() => {
-              if (matchObj.gameState === 'READY') {
+              if (matchObj.gameState === 'READY' || matchObj.gameState === 'WAITING') {
                 matchObj.gameState = 'PLAYING';
                 matchObj.startedAt = Date.now();
                 const startPayload = {
@@ -1442,9 +1442,11 @@ async function startServer() {
                 };
                 sendWs(matchObj.player1.ws, startPayload);
                 sendWs(matchObj.player2.ws, startPayload);
+                setDoc(doc(db, 'matches', matchId), { gameState: 'PLAYING', status: 'playing' }, { merge: true }).catch(() => {});
+                setDoc(doc(db, 'rooms', matchId), { gameState: 'PLAYING', status: 'playing' }, { merge: true }).catch(() => {});
                 console.log(`[Duel Server] Match ${matchId} is now PLAYING!`);
               }
-            }, 600);
+            }, 2500);
           } else {
             matchmakingQueue.push({ ws, player, wordLength: length });
             sendWs(ws, { type: 'queued', wordLength: length });
@@ -1640,9 +1642,9 @@ async function startServer() {
           const challenge = activeServerChallenges.get(challengeId) || data.challenge;
 
           if (accept) {
-            const wordLength = challenge?.wordLength || Number(data.wordLength) || 5;
-            const correctWord = turkishUpper(getRandomWord(wordLength, true));
-            const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+            const wordLength = Number(data.wordLength || challenge?.wordLength) || 5;
+            const matchId = data.matchId || challenge?.matchId || ('match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
+            const correctWord = turkishUpper(data.targetWord || data.correctWord || challenge?.targetWord || challenge?.correctWord || getRandomWord(wordLength, true));
 
             let challengerWs: WebSocket | null = null;
             let challengedWs: WebSocket | null = ws;
@@ -1694,7 +1696,7 @@ async function startServer() {
             if (challengerWs) socketToMatchIdMap.set(challengerWs, matchId);
             if (challengedWs) socketToMatchIdMap.set(challengedWs, matchId);
 
-            const initialFirestoreMatch = {
+            const initialFirestoreMatch = data.matchPayload || {
               id: matchId,
               matchId,
               wordLength,
@@ -1715,12 +1717,19 @@ async function startServer() {
 
             setDoc(doc(db, 'matches', matchId), initialFirestoreMatch, { merge: true }).catch(() => {});
             setDoc(doc(db, 'rooms', matchId), initialFirestoreMatch, { merge: true }).catch(() => {});
-            setDoc(doc(db, 'challenges', challengeId), { status: 'accepted', matchId }, { merge: true }).catch(() => {});
-
-            const startPayload = {
-              type: 'match_start',
+            setDoc(doc(db, 'challenges', challengeId), {
+              status: 'accepted',
               matchId,
-              gameState: 'PLAYING',
+              wordLength,
+              targetWord: correctWord,
+              correctWord,
+              matchPayload: initialFirestoreMatch
+            }, { merge: true }).catch(() => {});
+
+            const readyPayload = {
+              type: 'match_ready',
+              matchId,
+              gameState: 'READY',
               wordLength,
               correctWord,
               targetWord: correctWord,
@@ -1728,8 +1737,27 @@ async function startServer() {
               player2: { id: challengedId, name: challengedName, avatarUrl: challengedAvatar }
             };
 
-            if (challengerWs && challengerWs.readyState === WebSocket.OPEN) sendWs(challengerWs, startPayload);
-            if (challengedWs && challengedWs.readyState === WebSocket.OPEN) sendWs(challengedWs, startPayload);
+            if (challengerWs && challengerWs.readyState === WebSocket.OPEN) sendWs(challengerWs, readyPayload);
+            if (challengedWs && challengedWs.readyState === WebSocket.OPEN) sendWs(challengedWs, readyPayload);
+
+            setTimeout(() => {
+              const startPayload = {
+                type: 'match_start',
+                matchId,
+                gameState: 'PLAYING',
+                wordLength,
+                correctWord,
+                targetWord: correctWord,
+                player1: { id: challengerId, name: challengerName, avatarUrl: challengerAvatar },
+                player2: { id: challengedId, name: challengedName, avatarUrl: challengedAvatar }
+              };
+
+              if (challengerWs && challengerWs.readyState === WebSocket.OPEN) sendWs(challengerWs, startPayload);
+              if (challengedWs && challengedWs.readyState === WebSocket.OPEN) sendWs(challengedWs, startPayload);
+
+              setDoc(doc(db, 'matches', matchId), { gameState: 'PLAYING', status: 'playing' }, { merge: true }).catch(() => {});
+              setDoc(doc(db, 'rooms', matchId), { gameState: 'PLAYING', status: 'playing' }, { merge: true }).catch(() => {});
+            }, 2500);
 
             activeServerChallenges.delete(challengeId);
           } else {
