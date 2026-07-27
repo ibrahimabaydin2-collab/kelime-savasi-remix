@@ -5,7 +5,7 @@ import { validateUsername } from '../utils/usernameValidation';
 import { checkUsernameExists } from '../lib/firebase';
 
 interface FirstTimeSetupProps {
-  profile: UserProfile;
+  profile?: UserProfile | null;
   onComplete: (name: string, avatarUrl: string) => void;
 }
 
@@ -27,7 +27,7 @@ export default function FirstTimeSetup({ profile, onComplete }: FirstTimeSetupPr
     const trimmed = username.trim();
     setDbError(null);
 
-    const clientErr = validateUsername(trimmed, [], profile.id);
+    const clientErr = validateUsername(trimmed, [], profile?.id || '');
     if (clientErr || !trimmed) {
       setIsChecking(false);
       return;
@@ -36,7 +36,7 @@ export default function FirstTimeSetup({ profile, onComplete }: FirstTimeSetupPr
     setIsChecking(true);
     const timer = setTimeout(async () => {
       try {
-        const exists = await checkUsernameExists(trimmed, profile.id);
+        const exists = await checkUsernameExists(trimmed, profile?.id || '');
         if (exists) {
           setDbError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
         } else {
@@ -50,9 +50,9 @@ export default function FirstTimeSetup({ profile, onComplete }: FirstTimeSetupPr
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [username, profile.id]);
+  }, [username, profile?.id]);
 
-  const error = (isTouched || username ? validateUsername(username, [], profile.id) : null) || dbError;
+  const error = (isTouched || username ? validateUsername(username, [], profile?.id || '') : null) || dbError;
 
   const handleCustomAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -98,12 +98,12 @@ export default function FirstTimeSetup({ profile, onComplete }: FirstTimeSetupPr
     e.preventDefault();
     setIsTouched(true);
     setDbError(null);
-    const validationError = validateUsername(username, [], profile.id);
+    const validationError = validateUsername(username, [], profile?.id || '');
     if (validationError) return;
 
     setIsChecking(true);
     try {
-      const exists = await checkUsernameExists(username, profile.id);
+      const exists = await checkUsernameExists(username, profile?.id || '');
       if (exists) {
         setDbError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
         setIsChecking(false);

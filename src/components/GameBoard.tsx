@@ -9,6 +9,7 @@ interface GameBoardProps {
   boardTheme?: 'classic' | 'ocean' | 'neon' | 'autumn' | 'pastel';
   isGameOver?: boolean;
   revealedHints?: { [index: number]: string };
+  isDuplicateAttempt?: boolean;
 }
 
 export default function GameBoard({
@@ -18,7 +19,8 @@ export default function GameBoard({
   maxAttempts = 6,
   boardTheme = 'classic',
   isGameOver = false,
-  revealedHints = {}
+  revealedHints = {},
+  isDuplicateAttempt = false
 }: GameBoardProps) {
   const rows = [...attempts];
   const isCompleted = rows.length >= maxAttempts;
@@ -67,6 +69,9 @@ export default function GameBoard({
     
     if (!isSubmitted) {
       if (char && char !== ' ') {
+        if (isDuplicateAttempt) {
+          return `${base} border-rose-500 bg-rose-500/25 text-rose-200 scale-105 shadow-md shadow-rose-500/20 animate-pulse`;
+        }
         return `${base} border-amber-300/60 text-[#FAF6E9] bg-[#3D4756] scale-105 shadow-sm`;
       }
       return `${base} border-[#3E485A] bg-[#222B3A]/45 text-[#FAF6E9]/30`;

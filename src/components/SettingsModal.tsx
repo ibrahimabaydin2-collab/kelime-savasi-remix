@@ -21,7 +21,8 @@ import {
   Bell, 
   Sparkles,
   Wifi,
-  LogOut
+  LogOut,
+  Zap
 } from 'lucide-react';
 import { UserProfile, NetworkLogEntry } from '../types';
 import { validateUsername, validatePassword } from '../utils/usernameValidation';
@@ -48,6 +49,7 @@ export interface AppSettings {
   hapticEnabled: boolean;
   fontFamily?: 'poppins' | 'montserrat' | 'fredoka' | 'inter' | 'pacifico' | 'roboto-mono';
   notificationEnabled?: boolean;
+  lowLatencyMode?: boolean;
 }
 
 interface SettingsModalProps {
@@ -57,7 +59,7 @@ interface SettingsModalProps {
   darkMode?: boolean;
   onToggleDarkMode?: () => void;
   onOpenStats?: () => void;
-  profile: UserProfile;
+  profile: UserProfile | null;
   onUpdateProfile: (name: string, avatarUrl?: string) => void;
   networkLogs?: NetworkLogEntry[];
   onReconnect?: () => void;
@@ -81,8 +83,8 @@ export default function SettingsModal({
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>('account');
   const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
-  const [editName, setEditName] = useState<string>(profile.name);
-  const [selectedAvatar, setSelectedAvatar] = useState<string>(profile.avatarUrl || '🧠');
+  const [editName, setEditName] = useState<string>(profile?.name || '');
+  const [selectedAvatar, setSelectedAvatar] = useState<string>(profile?.avatarUrl || '🧠');
   const [showAvatarPresets, setShowAvatarPresets] = useState<boolean>(false);
   const [isTouched, setIsTouched] = useState<boolean>(false);
   const [dbUsernameError, setDbUsernameError] = useState<string | null>(null);
@@ -179,7 +181,7 @@ export default function SettingsModal({
       setClearDbMessage(`Başarılı! ${deletedCount} eski/hayalet kullanıcı temizlendi, arkadaş listeleri sıfırlandı.`);
       
       // Update local profile state immediately if needed or trigger profile update
-      if (currentUid) {
+      if (currentUid && profile) {
         onUpdateProfile(profile.name, profile.avatarUrl);
       }
     } catch (err: any) {
@@ -289,7 +291,7 @@ export default function SettingsModal({
     }
   };
 
-  const error = (isTouched || editName !== profile.name ? validateUsername(editName, [], profile.id) : null) || dbUsernameError;
+  const error = (isTouched || editName !== profile?.name ? validateUsername(editName, [], profile?.id || '') : null) || dbUsernameError;
 
   const AVATAR_PRESETS = [
     '⚔️', '🧠', '🐺', '🦁', '🧙‍♂️', '🦊', 
@@ -300,13 +302,13 @@ export default function SettingsModal({
   const handleSaveProfile = async (): Promise<boolean> => {
     setIsTouched(true);
     setDbUsernameError(null);
-    const validationError = validateUsername(editName, [], profile.id);
+    const validationError = validateUsername(editName, [], profile?.id || '');
     if (validationError) return false;
 
-    if (editName.trim() && editName.trim() !== profile.name) {
+    if (editName.trim() && editName.trim() !== profile?.name) {
       setIsCheckingName(true);
       try {
-        const exists = await checkUsernameExists(editName.trim(), profile.id);
+        const exists = await checkUsernameExists(editName.trim(), profile?.id || '');
         if (exists) {
           setDbUsernameError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
           setIsCheckingName(false);
@@ -319,7 +321,7 @@ export default function SettingsModal({
       }
     }
 
-    if (editName.trim() && (editName.trim() !== profile.name || selectedAvatar !== profile.avatarUrl)) {
+    if (editName.trim() && (editName.trim() !== profile?.name || selectedAvatar !== profile?.avatarUrl)) {
       onUpdateProfile(editName.trim(), selectedAvatar);
     }
     return true;
@@ -527,7 +529,7 @@ export default function SettingsModal({
                             setIsTouched(false);
                           }
                         }}
-                        disabled={!editName.trim() || !!error || isCheckingName || editName.trim() === profile.name}
+                        disabled={!editName.trim() || !!error || isCheckingName || editName.trim() === profile?.name}
                         className="w-full sm:w-auto px-4 py-2 bg-[#FAF6E9] hover:bg-[#F3EFE0] disabled:opacity-50 text-[#2E3748] text-xs font-black rounded-xl shadow-md transition active:scale-95 cursor-pointer shrink-0"
                       >
                         {isCheckingName ? 'Kontrol...' : 'Güncelle'}
@@ -1234,6 +1236,34 @@ export default function SettingsModal({
                   )}
                 </div>
 
+              </div>
+
+              {/* Card 3.5: Düşük Gecikme Modu (Low Latency Mode) */}
+              <div className="inner-theme border border-amber-500/30 bg-amber-500/5 rounded-2xl p-4.5 space-y-3.5 text-left shadow-md">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-amber-300 uppercase tracking-wider flex items-center gap-2">
+                    <Zap size={14} className="text-amber-400 animate-pulse" />
+                    Düşük Gecikme Modu (Low Latency Mode)
+                  </h4>
+                  <span className="text-[10px] font-black px-2 py-0.5 bg-amber-500/20 text-amber-300 rounded-full border border-amber-500/30 font-mono">
+                    350ms Polling
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-300 leading-relaxed">
+                  Canlı düellolarda WebSocket ping süresini ve otomatik veri eşitleme (polling) sıklığını 350ms&apos;ye düşürerek rakip hamlelerini anında ekranınıza aktarır. Yüksek gecikmeli hücresel hatlarda kusursuz senkronizasyon sağlar.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => updateSetting('lowLatencyMode', !(settings.lowLatencyMode ?? true))}
+                  className={`w-full py-2.5 rounded-xl border-2 text-xs font-black transition flex items-center justify-center gap-2 cursor-pointer ${
+                    (settings.lowLatencyMode ?? true)
+                      ? 'border-amber-500 bg-amber-500/20 text-amber-300 shadow-lg shadow-amber-500/10'
+                      : 'border-[#2E3754] text-slate-400 hover:bg-[#2E3754]/50'
+                  }`}
+                >
+                  <Zap size={14} className={(settings.lowLatencyMode ?? true) ? 'text-amber-400' : 'text-slate-400'} />
+                  <span>Düşük Gecikme Modu: {(settings.lowLatencyMode ?? true) ? 'AÇIK (Ultra Hızlı 350ms)' : 'KAPALI (Standart 800ms)'}</span>
+                </button>
               </div>
 
               {/* Card 4: İstatistikler & Rozetler (Sleek Button at the bottom of Tab 3) */}

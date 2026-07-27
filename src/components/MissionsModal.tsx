@@ -13,7 +13,7 @@ export default function MissionsModal({
   onClose,
   onStartWordGame
 }: MissionsModalProps) {
-  const missions = profile.missions || [];
+  const missions = profile?.missions || [];
   
   // Find the single active/promoted mission (the first uncompleted one)
   const activeMission = missions.find(m => !m.completed);

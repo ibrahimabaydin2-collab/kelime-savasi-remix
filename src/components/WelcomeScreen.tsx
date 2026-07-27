@@ -23,9 +23,10 @@ import {
 } from '../lib/firebase';
 import { suspendAudioContext, resumeAudioContext } from '../utils/soundEffects';
 import GoldWallet from './GoldWallet';
+import FriendsModal from './FriendsModal';
 
 interface WelcomeScreenProps {
-  profile: UserProfile;
+  profile: UserProfile | null;
   onUpdateProfile: (name: string, avatarUrl?: string) => void;
   dictionaryMode: 'tdk_online' | 'no_validation';
   onChangeDictionaryMode: (mode: 'tdk_online' | 'no_validation') => void;
@@ -98,7 +99,7 @@ export default function WelcomeScreen({
   const [copied, setCopied] = useState<boolean>(false);
 
   const todayStr = new Date().toISOString().split('T')[0];
-  const isDailyClaimed = profile.lastDailyLoginClaim === todayStr;
+  const isDailyClaimed = profile?.lastDailyLoginClaim === todayStr;
   
   // Game setup states
   const [showGameSetup, setShowGameSetup] = useState<boolean>(false);
@@ -491,15 +492,15 @@ export default function WelcomeScreen({
 
   // Profile Inline Editor State
   const [isEditing, setIsEditing] = useState<boolean>(false);
-  const [editName, setEditName] = useState<string>(profile.name);
-  const [selectedAvatar, setSelectedAvatar] = useState<string>(profile.avatarUrl || '🧠');
+  const [editName, setEditName] = useState<string>(profile?.name || '');
+  const [selectedAvatar, setSelectedAvatar] = useState<string>(profile?.avatarUrl || '🧠');
   const [isTouched, setIsTouched] = useState<boolean>(false);
   const [dbUsernameError, setDbUsernameError] = useState<string | null>(null);
   const [isCheckingName, setIsCheckingName] = useState<boolean>(false);
-  const error = (isTouched || editName !== profile.name ? validateUsername(editName, [], profile.id) : null) || dbUsernameError;
+  const error = (isTouched || editName !== profile?.name ? validateUsername(editName, [], profile?.id || '') : null) || dbUsernameError;
 
   React.useEffect(() => {
-    if (!isEditing) {
+    if (!isEditing && profile) {
       if (profile.name && profile.name !== editName) {
         setEditName(profile.name);
       }
@@ -507,7 +508,7 @@ export default function WelcomeScreen({
         setSelectedAvatar(profile.avatarUrl);
       }
     }
-  }, [profile.name, profile.avatarUrl, isEditing]);
+  }, [profile?.name, profile?.avatarUrl, isEditing]);
 
   const AVATAR_PRESETS = ['⚔️', '🧠', '🐺', '🦁', '🧙‍♂️', '🦊', '👾', '🦄', '⚡', '👑', '🎯', '🚀', '🔥', '🐉', '🐼', '🛡️', '🏆', '🦉'];
 
@@ -522,13 +523,13 @@ export default function WelcomeScreen({
   const handleSaveProfile = async () => {
     setIsTouched(true);
     setDbUsernameError(null);
-    const validationError = validateUsername(editName, [], profile.id);
+    const validationError = validateUsername(editName, [], profile?.id || '');
     if (validationError) return;
 
-    if (editName.trim() && editName.trim() !== profile.name) {
+    if (editName.trim() && editName.trim() !== profile?.name) {
       setIsCheckingName(true);
       try {
-        const exists = await checkUsernameExists(editName.trim(), profile.id);
+        const exists = await checkUsernameExists(editName.trim(), profile?.id || '');
         if (exists) {
           setDbUsernameError('Bu kullanıcı adı daha önce alınmıştır, lütfen başka bir tane seçin.');
           setIsCheckingName(false);
@@ -627,7 +628,7 @@ export default function WelcomeScreen({
     return a.name.localeCompare(b.name, 'tr-TR');
   });
 
-  const winRate = profile.stats && profile.stats.gamesPlayed > 0 
+  const winRate = profile?.stats && profile.stats.gamesPlayed > 0 
     ? Math.round((profile.stats.gamesWon / profile.stats.gamesPlayed) * 100) 
     : 0;
 
@@ -1089,7 +1090,7 @@ export default function WelcomeScreen({
       <div className="flex items-center justify-between w-full relative z-10 gap-2" id="welcome-header-title">
         {/* Shimmering Gold Wallet in welcome header with Daily Bonus Status Indicator */}
         <div className="flex flex-col items-start gap-1 shrink-0">
-          <GoldWallet gold={profile.gold !== undefined ? profile.gold : 20} />
+          <GoldWallet gold={profile?.gold !== undefined ? profile.gold : 20} />
           <button
             onClick={() => {
               if (!isDailyClaimed && onClaimDailyReward) {
@@ -1139,7 +1140,7 @@ export default function WelcomeScreen({
 
       {/* Unified Level, Profile Photo, Name Card (Requirement 5) */}
       {(() => {
-        const progress = getLevelProgress(profile.dailyScore);
+        const progress = getLevelProgress(profile?.dailyScore || 0);
         return (
           <div className="w-full bg-[#FAF6E9] border-2 border-[#EBE6D5] rounded-3xl p-4 sm:p-5 shadow-[0_5px_0_#D9D4C3,0_8px_16px_rgba(0,0,0,0.15)] flex flex-col gap-4 text-left relative z-10 overflow-hidden" id="unified-level-profile-card">
             
@@ -1161,7 +1162,7 @@ export default function WelcomeScreen({
                   className="relative w-16 h-16 rounded-full bg-[#1A212D] border-2 border-amber-500/50 flex items-center justify-center overflow-hidden shrink-0 transition-transform duration-300 hover:scale-105 cursor-pointer"
                   onClick={() => setIsEditing(true)}
                 >
-                  {profile.avatarUrl && profile.avatarUrl.length > 3 ? (
+                  {profile?.avatarUrl && profile.avatarUrl.length > 3 ? (
                      <img src={profile.avatarUrl} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                   ) : (
                      <span className="text-3xl select-none">🧠</span>
@@ -1170,7 +1171,7 @@ export default function WelcomeScreen({
 
                 <div className="flex flex-col">
                   {/* Name: "Art" */}
-                  <span className="text-2xl sm:text-3xl font-serif tracking-wide text-[#2E3748] font-bold leading-tight">{profile.name || 'Oyuncu'}</span>
+                  <span className="text-2xl sm:text-3xl font-serif tracking-wide text-[#2E3748] font-bold leading-tight">{profile?.name || 'Oyuncu'}</span>
                   {/* Level: "1. SEVİYE" */}
                   <span className="text-[11px] sm:text-xs font-black text-[#C59B27] font-mono tracking-wider uppercase mt-1">
                     {progress.level}. SEVİYE
@@ -1219,7 +1220,7 @@ export default function WelcomeScreen({
             <span className="font-serif tracking-wide text-[#2E3748] font-bold text-base sm:text-lg">Cüzdanım & Ödüller</span>
           </div>
           <div className="bg-[#FEF9E6] px-2.5 py-1 rounded-xl border border-amber-500/30 flex items-center gap-1.5 shadow-sm">
-            <span className="text-xs sm:text-sm font-black text-[#C59B27] font-mono leading-none">{profile.gold !== undefined ? profile.gold : 20}</span>
+            <span className="text-xs sm:text-sm font-black text-[#C59B27] font-mono leading-none">{profile?.gold !== undefined ? profile.gold : 20}</span>
             <span className="text-[10px] sm:text-xs font-black text-[#C59B27] font-mono leading-none">ALTIN</span>
           </div>
         </div>
@@ -1228,7 +1229,7 @@ export default function WelcomeScreen({
           {/* Daily Login Button */}
           {(() => {
             const todayStr = new Date().toISOString().split('T')[0];
-            const isDailyClaimed = profile.lastDailyLoginClaim === todayStr;
+            const isDailyClaimed = profile?.lastDailyLoginClaim === todayStr;
             return (
               <button
                 disabled={isDailyClaimed}
@@ -1564,294 +1565,23 @@ export default function WelcomeScreen({
         </div>
       )}
 
-      {/* Active Friends Modal (Aktif Arkadaşlar) */}
-      {showFriendsModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="card-theme bg-[#161D2B] border border-amber-500/20 rounded-[2rem] p-6 w-full max-w-md shadow-2xl space-y-4 animate-scale-up text-left relative overflow-hidden text-white">
-            {/* Glowing 4-point star accent in bottom right */}
-            <div className="absolute bottom-6 right-8 text-amber-100/15 animate-pulse select-none pointer-events-none">
-              <svg className="w-8 h-8" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 0c.5 6.5 5.5 11.5 12 12-.5 6.5-5.5 11.5-12 12-.5-6.5-5.5-11.5-12-12 .5-6.5 5.5-11.5 12-12z" />
-              </svg>
-            </div>
-
-            <div className="flex justify-between items-start border-b border-white/10 pb-3">
-              <div>
-                <h3 className="text-base font-black text-[#FAF6E9] uppercase tracking-wide flex items-center gap-2">
-                  <Users size={18} className="text-amber-400" />
-                  Arkadaşlık Merkezi
-                </h3>
-                <p className="text-[10px] text-amber-100/50 font-mono font-bold uppercase mt-0.5">
-                  ARKADAŞ LİSTESİ
-                </p>
-              </div>
-              <button
-                onClick={() => setShowFriendsModal(false)}
-                className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition cursor-pointer"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Custom Tab Selection inside Friends modal */}
-            <div className="flex bg-black/20 p-1 rounded-xl">
-              <button
-                onClick={() => setFriendsTab('friends')}
-                className={`flex-1 py-1.5 text-[10.5px] font-black uppercase rounded-lg transition-all text-center cursor-pointer ${
-                  friendsTab === 'friends'
-                    ? 'bg-[#FAF6E9] text-[#2E3748] shadow-sm'
-                    : 'text-gray-400 hover:text-white'
-                }`}
-              >
-                Arkadaşlarım ({confirmedFriends.length})
-              </button>
-              <button
-                onClick={() => setFriendsTab('find')}
-                className={`flex-1 py-1.5 text-[10.5px] font-black uppercase rounded-lg transition-all text-center cursor-pointer ${
-                  friendsTab === 'find'
-                    ? 'bg-[#FAF6E9] text-[#2E3748] shadow-sm'
-                    : 'text-gray-400 hover:text-white'
-                }`}
-              >
-                Oyuncu Bul
-              </button>
-            </div>
-
-            {/* Search input for adding friends tab */}
-            {friendsTab === 'find' && (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Oyuncu adı ile ara..."
-                  value={friendsSearchTerm}
-                  onChange={(e) => setFriendsSearchTerm(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleSearchPlayers();
-                    }
-                  }}
-                  className="flex-1 bg-black/25 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-                />
-                <button
-                  disabled={searching}
-                  onClick={handleSearchPlayers}
-                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl text-xs font-black uppercase transition shrink-0 cursor-pointer disabled:opacity-55"
-                >
-                  {searching ? 'Aranıyor...' : 'Ara'}
-                </button>
-              </div>
-            )}
-
-            <div className="space-y-2 text-xs leading-relaxed text-gray-300 max-h-[40vh] overflow-y-auto pr-1">
-              {!isOnline ? (
-                <div className="text-center py-6 text-gray-400">
-                  <p className="text-xs font-bold font-mono text-rose-450">ÇEVRİMDIŞI MOD</p>
-                  <p className="text-[10px] mt-1 text-gray-400/85">Arkadaşlarını görebilmek ve savaş açabilmek için internet bağlantısı gerekir.</p>
-                </div>
-              ) : friendsTab === 'friends' ? (
-                loadingFriends ? (
-                  <div className="text-center py-8 text-gray-400">
-                    <div className="w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-                    <p className="text-[10px] font-mono uppercase tracking-wider">Arkadaşlar yükleniyor...</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {/* Gelen İstekler Section */}
-                    {incomingRequests.length > 0 && (
-                      <div className="space-y-1.5">
-                        <div className="text-left py-1 text-emerald-400 font-black uppercase text-[9px] tracking-wider font-mono">
-                          📥 Gelen Arkadaşlık İstekleri ({incomingRequests.length})
-                        </div>
-                        {incomingRequests.map((request) => (
-                          <div key={request.id} className="p-2.5 bg-[#3D4756]/45 rounded-xl border border-white/5 flex items-center justify-between text-left animate-scale-up">
-                            <div className="flex items-center gap-2">
-                              <div className="w-8 h-8 rounded-full bg-[#3D4756] flex items-center justify-center font-bold text-xs border border-white/10 shrink-0">
-                                {request.avatarUrl ? (
-                                  request.avatarUrl.length < 4 ? (
-                                    <span className="text-sm select-none">{request.avatarUrl}</span>
-                                  ) : (
-                                    <img src={request.avatarUrl} alt="avatar" className="w-full h-full object-cover rounded-full" referrerPolicy="no-referrer" />
-                                  )
-                                ) : (
-                                  <span className="text-gray-400">{request.name.charAt(0).toUpperCase()}</span>
-                                )}
-                              </div>
-                              <div>
-                                <span className="text-xs font-black text-[#FAF6E9] block leading-none">{request.name}</span>
-                                <span className="text-[8.5px] text-emerald-400 block font-mono mt-0.5 uppercase tracking-wide">
-                                  Sana İstek Gönderdi
-                                </span>
-                              </div>
-                            </div>
-
-                            <button
-                              onClick={() => addFriend(request.id)}
-                              className="text-[9.5px] px-2.5 py-1 rounded-lg font-black uppercase transition duration-150 flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm cursor-pointer"
-                            >
-                              <UserPlus size={10} />
-                              <span>Kabul Et</span>
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Onaylı Arkadaşlar Section */}
-                    <div className="space-y-1.5">
-                      <div className="text-left py-1 text-amber-200/85 font-black uppercase text-[9px] tracking-wider font-mono">
-                        Onaylı Arkadaşlarım ({friendsWithStatus.length})
-                      </div>
-                      
-                      {friendsWithStatus.length === 0 ? (
-                        <div className="text-center py-8 text-gray-400 bg-black/10 rounded-2xl p-4 border border-white/5">
-                          <p className="text-xs font-black font-mono text-amber-450">HENÜZ ONAYLI ARKADAŞIN YOK 🏜️</p>
-                          <p className="text-[10px] mt-1 text-gray-400/85">
-                            Burada sadece senin eklediğin ve seni geri ekleyen onaylı arkadaşların listelenir. Oyuncu bulmak için yan sekmeyi kullanabilirsin!
-                          </p>
-                        </div>
-                      ) : (
-                        friendsWithStatus.map((friend) => (
-                          <div key={friend.id} className="p-2.5 bg-[#3D4756]/45 rounded-xl border border-white/5 flex items-center justify-between text-left animate-scale-up">
-                            <div className="flex items-center gap-2">
-                              <div className="w-8 h-8 rounded-full bg-[#3D4756] flex items-center justify-center font-bold text-xs border border-white/10 shrink-0 relative">
-                                {friend.avatarUrl ? (
-                                  friend.avatarUrl.length < 4 ? (
-                                    <span className="text-sm select-none">{friend.avatarUrl}</span>
-                                  ) : (
-                                    <img src={friend.avatarUrl} alt="avatar" className="w-full h-full object-cover rounded-full" referrerPolicy="no-referrer" />
-                                  )
-                                ) : (
-                                  <span className="text-gray-400">{friend.name.charAt(0).toUpperCase()}</span>
-                                )}
-                                <span className={`absolute bottom-0 right-0 w-2 h-2 rounded-full border border-[#2E3748] ${
-                                  friend.isOnline ? 'bg-emerald-500' : 'bg-gray-500'
-                                }`} />
-                              </div>
-                              <div>
-                                <span className="text-xs font-black text-[#FAF6E9] block leading-none">{friend.name}</span>
-                                <span className="text-[8.5px] text-gray-400 block font-mono mt-0.5 uppercase tracking-wide">
-                                  {friend.isOnline ? (
-                                    friend.status === 'playing' ? '🎮 Oyunda' : friend.status === 'challenging' ? '⚔️ Sırada' : '🟢 Boşta'
-                                  ) : (
-                                    '⚪ Çevrimdışı'
-                                  )}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                onClick={() => {
-                                  if (onChallengePlayer) {
-                                    onChallengePlayer(friend, duelWordLength || wordLength || 5);
-                                  }
-                                }}
-                                className="text-[9.5px] px-2.5 py-1 rounded-xl font-black uppercase tracking-wider transition-all duration-150 flex items-center gap-1 bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 shadow-md active:scale-95 cursor-pointer border border-amber-200/50"
-                                title={`${friend.name} oyuncusuna Meydan Oku`}
-                              >
-                                <Swords size={11} className="stroke-[2.5]" />
-                                <span>Meydan Oku</span>
-                              </button>
-
-                              <button
-                                onClick={() => removeFriend(friend.id)}
-                                className="p-1.5 rounded-lg text-rose-400/80 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
-                                title="Arkadaşı Sil"
-                              >
-                                <UserMinus size={13} />
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                )
-              ) : (
-                /* Find Players Tab (Oyuncu Bul) */
-                searching ? (
-                  <div className="text-center py-8 text-gray-400">
-                    <div className="w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-                    <p className="text-[10px] font-mono uppercase tracking-wider">Oyuncu aranıyor...</p>
-                  </div>
-                ) : !searchHasRun ? (
-                  /* Empty state before searching is performed */
-                  null
-                ) : searchedPlayers.length === 0 ? (
-                  <div className="text-center py-8 text-gray-400">
-                    <p className="text-xs font-black font-mono text-amber-450">OYUNCU BULUNAMADI 🔍</p>
-                    <p className="text-[10px] mt-1 text-gray-400/85">
-                      Girdiğiniz kullanıcı adıyla eşleşen bir oyuncu bulunamadı. Lütfen tam adını doğru yazdığınızdan emin olun.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    {searchedPlayers.map((player) => {
-                      const isAlreadyFriend = (profile.friends || []).includes(player.id);
-                      const hasAddedMe = incomingRequests.some(r => r.id === player.id);
-                      const isMutual = confirmedFriends.some(f => f.id === player.id);
-                      
-                      return (
-                        <div key={player.id} className="p-2.5 bg-[#3D4756]/45 rounded-xl border border-white/5 flex items-center justify-between text-left">
-                          <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 rounded-full bg-[#3D4756] flex items-center justify-center font-bold text-xs border border-white/10 shrink-0">
-                              {player.avatarUrl ? (
-                                player.avatarUrl.length < 4 ? (
-                                  <span className="text-sm select-none">{player.avatarUrl}</span>
-                                ) : (
-                                  <img src={player.avatarUrl} alt="avatar" className="w-full h-full object-cover rounded-full" referrerPolicy="no-referrer" />
-                                )
-                              ) : (
-                                <span className="text-gray-400">{player.name.charAt(0).toUpperCase()}</span>
-                              )}
-                            </div>
-                            <div>
-                              <span className="text-xs font-black text-[#FAF6E9] block leading-none">{player.name}</span>
-                              <span className="text-[8.5px] text-gray-400 block font-mono mt-0.5 uppercase tracking-wide">
-                                {isMutual ? '🟢 ARKADAŞINIZ' : '👤 OYUNCU'}
-                              </span>
-                            </div>
-                          </div>
-
-                          {isMutual ? (
-                            <span className="text-[9.5px] text-emerald-400 font-bold uppercase">✓ Arkadaşsınız</span>
-                          ) : isAlreadyFriend ? (
-                            <span className="text-[9.5px] text-amber-400 font-bold uppercase">✓ İstek Gönderildi</span>
-                          ) : (
-                            <button
-                              onClick={() => addFriend(player.id)}
-                              className="text-[9.5px] px-2.5 py-1 rounded-lg font-black uppercase transition duration-150 flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm cursor-pointer"
-                            >
-                              <UserPlus size={10} />
-                              <span>{hasAddedMe ? 'Kabul Et' : 'Arkadaş Ekle'}</span>
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )
-              )}
-            </div>
-
-            <div className="pt-3 border-t border-white/10 flex justify-between items-center">
-              <button
-                onClick={handleCopyLink}
-                className="inline-flex items-center gap-1.5 bg-[#3D4756]/30 hover:bg-[#3D4756]/60 text-gray-300 px-3 py-2 rounded-xl text-[10px] font-bold transition border border-white/5 cursor-pointer"
-              >
-                {copied ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
-                <span>{copied ? 'Kopyalandı!' : 'Arkadaş Davet Et'}</span>
-              </button>
-
-              <button
-                onClick={() => setShowFriendsModal(false)}
-                className="bg-[#FAF6E9] hover:bg-[#F3EFE0] text-[#2E3748] font-black text-xs px-4 py-2 rounded-xl shadow-md transition cursor-pointer"
-              >
-                Kapat
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Active Friends Modal */}
+      {showFriendsModal && profile && (
+        <FriendsModal
+          profile={profile}
+          onClose={() => setShowFriendsModal(false)}
+          onUpdateFriends={(newFriends) => {
+            if (onUpdateFriends) onUpdateFriends(newFriends);
+          }}
+          isOnline={isOnline}
+          lobbyPlayers={lobbyPlayers}
+          onChallengePlayer={(player, wLen) => {
+            setShowFriendsModal(false);
+            if (onChallengePlayer) onChallengePlayer(player, wLen);
+          }}
+          duelWordLength={duelWordLength}
+          wordLength={wordLength}
+        />
       )}
 
       {/* 📺 AD-WATCHING OVERLAY */}

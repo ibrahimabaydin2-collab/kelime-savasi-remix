@@ -101,6 +101,7 @@ function createSafeFirestore() {
   try {
     return initializeFirestore(app, {
       experimentalAutoDetectLongPolling: true,
+      experimentalForceLongPolling: true,
       localCache: cacheConfig
     }, dbId);
   } catch (err) {
@@ -165,10 +166,14 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 // Validate Connection to Firestore on startup as required by the Firebase Integration skill
 async function testConnection() {
   try {
-    await getDoc(doc(db, 'test', 'connection'));
-    console.log('Successfully checked Cloud Firestore connection (cached or online).');
-  } catch (error) {
-    console.warn("Firestore connection check:", error);
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    console.log('Successfully checked Cloud Firestore connection.');
+  } catch (error: any) {
+    if (error && (error.code === 'unavailable' || error.message?.includes('offline') || error.message?.includes('could not be completed'))) {
+      console.warn("Firestore operating in offline/cached mode:", error.message || error);
+    } else {
+      console.warn("Firestore connection check notice:", error);
+    }
   }
 }
 testConnection();

@@ -82,17 +82,17 @@ export default function StatsModal({
   const [activeTab, setActiveTab] = useState<'stats' | 'missions' | 'badges'>('stats');
   const [copied, setCopied] = useState(false);
 
-  const stats = profile.stats;
+  const stats = profile?.stats || { gamesPlayed: 0, gamesWon: 0, currentStreak: 0, maxStreak: 0, winDistribution: [0, 0, 0, 0, 0, 0] };
   const winRate = stats.gamesPlayed > 0 ? Math.round((stats.gamesWon / stats.gamesPlayed) * 100) : 0;
   
   // Find highest frequency in win distribution for scaling bars
-  const maxDistribution = Math.max(...stats.winDistribution, 1);
+  const maxDistribution = Math.max(...(stats.winDistribution || [0]), 1);
 
   // Unlocked badges count
-  const unlockedBadgesCount = profile.badges.filter(b => b.unlockedAt).length;
+  const unlockedBadgesCount = (profile?.badges || []).filter(b => b.unlockedAt).length;
 
   // Completed missions count
-  const completedMissionsCount = profile.missions.filter(m => m.completed).length;
+  const completedMissionsCount = (profile?.missions || []).filter(m => m.completed).length;
 
   // Word length stats calculation
   const totalWordLengthWins = [3, 4, 5, 6, 7, 8].reduce((acc, len) => {

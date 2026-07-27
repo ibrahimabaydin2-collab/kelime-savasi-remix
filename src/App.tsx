@@ -19,6 +19,7 @@ import StatsModal from './components/StatsModal';
 import MissionsModal from './components/MissionsModal';
 import WelcomeScreen from './components/WelcomeScreen';
 import GoldWallet from './components/GoldWallet';
+import FriendsModal from './components/FriendsModal';
 import SettingsModal, { AppSettings } from './components/SettingsModal';
 import AuthScreen from './components/AuthScreen';
 import BadgeUnlockedModal from './components/BadgeUnlockedModal';
@@ -26,7 +27,7 @@ import ProgressDots from './components/ProgressDots';
 import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types';
-import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut, Wifi, WifiOff } from 'lucide-react';
+import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut, Wifi, WifiOff, Zap, Users } from 'lucide-react';
 import { getRandomWord, isWordInCuratedList, getDailyWordAndLength, COMMON_TURKISH_WORDS, CLEANED_TURKISH_WORDS } from './data/wordlist';
 import { turkishUpper, turkishLower, validateTurkishLinguistics } from './utils/turkish';
 import { getApiUrl, getWsUrl, validateWordClientSide } from './utils/api';
@@ -234,9 +235,9 @@ const getEffectiveSelfName = (
   return 'Oyuncu';
 };
 
-const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?: string; username?: string; displayName?: string; avatarUrl?: string }, rawPlayers?: any) => {
+const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id?: string; name?: string; username?: string; displayName?: string; avatarUrl?: string } | null, rawPlayers?: any) => {
   const currentAuthUser = auth.currentUser;
-  const selfId = currentAuthUser?.uid || profile.id;
+  const selfId = currentAuthUser?.uid || profile?.id || '';
   const selfName = getEffectiveSelfName(profile, currentAuthUser);
 
   const p1 = rawP1 || {};
@@ -270,16 +271,16 @@ const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id: string; name?
   if (!p1Id) p1Id = 'p1';
   if (!p2Id) p2Id = 'p2';
 
-  if (p1Id === selfId || p1Id === profile.id) {
+  if (p1Id === selfId || (profile?.id && p1Id === profile.id)) {
     p1Name = selfName;
-    if (profile.avatarUrl) p1Avatar = profile.avatarUrl;
+    if (profile?.avatarUrl) p1Avatar = profile.avatarUrl;
   } else if (!p1Name || isGenericName(p1Name)) {
     p1Name = 'Rakip';
   }
 
-  if (p2Id === selfId || p2Id === profile.id) {
+  if (p2Id === selfId || (profile?.id && p2Id === profile.id)) {
     p2Name = selfName;
-    if (profile.avatarUrl) p2Avatar = profile.avatarUrl;
+    if (profile?.avatarUrl) p2Avatar = profile.avatarUrl;
   } else if (!p2Name || isGenericName(p2Name)) {
     p2Name = 'Rakip';
   }
@@ -922,8 +923,8 @@ export default function App() {
     if (suggestion) {
       const success = await deductGold(1);
       if (success) {
-        setActiveWordSuggestion(suggestion.toUpperCase());
-        showToast(`Kelime Tavsiyesi Alındı: ${suggestion.toUpperCase()} 💡`, "success");
+        setCurrentAttempt(suggestion.toUpperCase());
+        showToast(`Tavsiye Kelime Yazıldı: ${suggestion.toUpperCase()} 💡`, "success");
         playClickSound(settings.soundEnabled);
       }
     } else {
@@ -1079,7 +1080,8 @@ export default function App() {
       keyboardLayout: 'Q',
       soundEnabled: true,
       hapticEnabled: true,
-      fontFamily: 'poppins'
+      fontFamily: 'poppins',
+      lowLatencyMode: true
     };
   });
 
@@ -1226,6 +1228,8 @@ export default function App() {
   const [showMissionsModal, setShowMissionsModal] = useState<boolean>(false);
   const [showLobbyModal, setShowLobbyModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [showFriendsModal, setShowFriendsModal] = useState<boolean>(false);
+  const [showWordHistoryModal, setShowWordHistoryModal] = useState<boolean>(false);
   const [showCongratsModal, setShowCongratsModal] = useState<boolean>(false);
   const handledMatchEndIdsRef = useRef<Set<string>>(new Set());
   const [opponentLeftDuringMatch, setOpponentLeftDuringMatch] = useState<boolean>(false);
@@ -1253,8 +1257,8 @@ export default function App() {
   };
 
   const [isEditingName, setIsEditingName] = useState<boolean>(false);
-  const [nameInput, setNameInput] = useState<string>(profile.name);
-  const [avatarInput, setAvatarInput] = useState<string | undefined>(profile.avatarUrl);
+  const [nameInput, setNameInput] = useState<string>(profile?.name || '');
+  const [avatarInput, setAvatarInput] = useState<string | undefined>(profile?.avatarUrl);
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
   // Sync nameInput and avatarInput when profile changes
@@ -1302,8 +1306,8 @@ export default function App() {
       return;
     }
 
-    const currentAuthUid = auth.currentUser?.uid || profile.id;
-    const selfKey = profile.id || currentAuthUid;
+    const currentAuthUid = auth.currentUser?.uid || profile?.id || '';
+    const selfKey = profile?.id || currentAuthUid;
 
     // Read currentAttemptCount from players object for self
     const selfPlayerData = activeMatch.players[selfKey] || activeMatch.players[currentAuthUid] || {};
@@ -1338,7 +1342,7 @@ export default function App() {
     });
 
     setOppCurrentAttemptCount(maxOppCount);
-  }, [activeMatch, activeMatch?.players, attempts.length, profile.id]);
+  }, [activeMatch, activeMatch?.players, attempts.length, profile?.id]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const wasOnlineRef = useRef<boolean>(false);
@@ -1711,11 +1715,17 @@ export default function App() {
         } else {
           if (active) {
             setFirebaseUser(null);
+            setProfile(null as any);
             const justSignedOut = safeLocalStorage.getItem('kelimesavasi_just_signed_out') === 'true';
             if (justSignedOut) {
-              console.log('Explicit sign-out detected. Preventing auto guest re-login...');
+              console.log('Explicit sign-out detected. Directing cleanly to Login screen...');
               safeLocalStorage.removeItem('kelimesavasi_just_signed_out');
-              setProfile(null as any);
+              safeLocalStorage.removeItem('kelimesavasi_profile');
+              safeLocalStorage.removeItem('saved_username');
+              safeLocalStorage.removeItem('kelimesavasi_is_registered');
+              safeLocalStorage.removeItem('kelimesavasi_entered');
+              safeLocalStorage.removeItem('kelimesavasi_signing_in');
+              safeLocalStorage.removeItem('pending_restoration_profile');
               if (active) {
                 resolved = true;
                 setAuthLoading(false);
@@ -1855,7 +1865,7 @@ export default function App() {
             }
           }
 
-          // Heartbeat ping every 4s (prevents mobile carrier NAT drops and keeps real-time latency updated)
+          // Heartbeat ping (1.5s in Low Latency Mode or active duel, 4s otherwise)
           const sendPing = () => {
             if (ws && ws.readyState === WebSocket.OPEN) {
               lastPingTimestampRef.current = Date.now();
@@ -1865,7 +1875,8 @@ export default function App() {
 
           sendPing();
           if (pingInterval) clearInterval(pingInterval);
-          pingInterval = setInterval(sendPing, 4000);
+          const dynamicPingDelay = (settings.lowLatencyMode ?? true) || activeMatch ? 1500 : 4000;
+          pingInterval = setInterval(sendPing, dynamicPingDelay);
         };
 
         ws.onmessage = (event) => {
@@ -1978,8 +1989,8 @@ export default function App() {
             } else if (data.type === 'opponent_attempt') {
               if (!hasEnteredGameRef.current || !activeMatchRef.current) return;
               const currentAuthUid = auth.currentUser?.uid;
-              const selfId = currentAuthUid || profile.id;
-              if (data.opponentId && (data.opponentId === selfId || data.opponentId === profile.id)) {
+              const selfId = currentAuthUid || profile?.id || '';
+              if (data.opponentId && (data.opponentId === selfId || (profile?.id && data.opponentId === profile.id))) {
                 return;
               }
 
@@ -1994,7 +2005,7 @@ export default function App() {
 
                 Object.keys(updatedPlayers).forEach((key) => {
                   const p = updatedPlayers[key];
-                  const isSelfKey = key === selfId || key === profile.id || p?.id === selfId || p?.uid === selfId || p?.id === profile.id || p?.uid === profile.id;
+                  const isSelfKey = key === selfId || (profile?.id && key === profile.id) || p?.id === selfId || p?.uid === selfId || (profile?.id && (p?.id === profile.id || p?.uid === profile.id));
                   if (!isSelfKey) {
                     const currentAtts = Array.isArray(p?.attempts) ? p.attempts : [];
                     let newAtts = [...currentAtts];
@@ -2011,7 +2022,7 @@ export default function App() {
                 });
 
                 const oppId = data.opponentId;
-                if (oppId && !updatedPlayers[oppId] && oppId !== selfId && oppId !== profile.id) {
+                if (oppId && !updatedPlayers[oppId] && oppId !== selfId && (!profile?.id || oppId !== profile.id)) {
                   let newAtts = [];
                   while (newAtts.length < targetCount) {
                     newAtts.push({ word: '*****', feedback: ['grey', 'grey', 'grey', 'grey', 'grey'] });
@@ -2068,7 +2079,7 @@ export default function App() {
                 return;
               }
               setOpponentLeftDuringMatch(true);
-              const selfId = auth.currentUser?.uid || profile.id;
+              const selfId = auth.currentUser?.uid || profile?.id || '';
               const winnerId = data.winner || data.winnerUserId || data.winnerId || selfId;
               showToast('Rakip oyundan ayrıldı! Zafer senin!', 'success');
               handleInstantMatchEndRef.current(winnerId, {
@@ -2141,7 +2152,7 @@ export default function App() {
       }
       socketRef.current = null;
     };
-  }, [profile.id, reconnectCounter]);
+  }, [profile?.id, reconnectCounter]);
 
   const syncMatchState = useCallback((
     updatedAttempts: GameAttempt[],
@@ -2156,14 +2167,14 @@ export default function App() {
     if (!matchId) return;
 
     const currentAuthUser = auth.currentUser;
-    const currentUid = currentAuthUser?.uid || profile.id;
+    const currentUid = currentAuthUser?.uid || profile?.id || '';
     const selfName = getEffectiveSelfName(profile, currentAuthUser);
-    const selfAvatar = profile.avatarUrl || currentAuthUser?.photoURL || '';
+    const selfAvatar = profile?.avatarUrl || currentAuthUser?.photoURL || '';
 
     const playerState = {
       uid: currentUid,
       id: currentUid,
-      profileId: profile.id,
+      profileId: profile?.id || currentUid,
       name: selfName,
       username: selfName,
       displayName: selfName,
@@ -2185,7 +2196,7 @@ export default function App() {
       [`attempts.${currentUid}`]: updatedAttempts
     };
 
-    if (profile.id && profile.id !== currentUid) {
+    if (profile?.id && profile.id !== currentUid) {
       payload[`players.${profile.id}`] = playerState;
       payload[`attempts.${profile.id}`] = updatedAttempts;
     }
@@ -2244,7 +2255,7 @@ export default function App() {
       length = dailyInfo.length;
       setWordLength(length);
     } else {
-      const isLevel1 = getLevelForScore(profile.dailyScore) === 1;
+      const isLevel1 = getLevelForScore(profile?.dailyScore || 0) === 1;
       picked = getRandomWord(length, isLevel1);
     }
 
@@ -2284,11 +2295,24 @@ export default function App() {
       safeLocalStorage.setItem('kelimesavasi_just_signed_out', 'true');
 
       setShowSettingsModal(false);
+      setShowStatsModal(false);
+      setShowMissionsModal(false);
+      setShowLobbyModal(false);
+      setShowCongratsModal(false);
+
       setHasEnteredGame(false);
       setGameStatus('idle');
       setActiveMatch(null);
+      setActiveChallenges([]);
+
+      const currentUid = profile?.id;
       setProfile(null as any);
       setFirebaseUser(null);
+
+      if (currentUid) {
+        clearMatchmakingState(currentUid).catch(() => {});
+        updateUserPresence(currentUid, false).catch(() => {});
+      }
 
       await signOutUser();
       showToast('Hesabınızdan başarıyla çıkış yapıldı.', 'info');
@@ -2416,7 +2440,7 @@ export default function App() {
     );
 
     setActiveMatch((prev) => {
-      const selfId = currentAuthUid || profile.id;
+      const selfId = currentAuthUid || profile?.id || '';
       const oppId = matchData?.loser || matchData?.loserId || 'opponent';
 
       const base = prev || {
@@ -2426,7 +2450,7 @@ export default function App() {
         targetWord: matchData?.correctWord || matchData?.targetWord || '',
         correctWord: matchData?.correctWord || matchData?.targetWord || '',
         players: {
-          [selfId]: { id: selfId, name: profile.name || 'Sen', attempts: attempts },
+          [selfId]: { id: selfId, name: profile?.name || 'Sen', attempts: attempts },
           [oppId]: { id: oppId, name: 'Rakip', attempts: [] }
         }
       };
@@ -2485,7 +2509,7 @@ export default function App() {
     // Trigger FCM High Priority Push Notification for background/sleeping devices via backend
     if (currentMatchId) {
       const playersMap = activeMatch?.players || matchData?.players || {};
-      const oppEntry = Object.values(playersMap).find((p: any) => p && p.id !== profile.id) as any;
+      const oppEntry = Object.values(playersMap).find((p: any) => p && p.id && (!profile?.id || p.id !== profile.id)) as any;
       const oppId = oppEntry?.id || '';
       const oppName = oppEntry?.name || 'Rakip';
 
@@ -2495,9 +2519,9 @@ export default function App() {
         body: JSON.stringify({
           matchId: currentMatchId,
           winnerId,
-          loserId: winnerId === profile.id ? oppId : profile.id,
-          winnerName: winnerId === profile.id ? profile.name : oppName,
-          loserName: winnerId === profile.id ? oppName : profile.name,
+          loserId: winnerId === profile?.id ? oppId : (profile?.id || ''),
+          winnerName: winnerId === profile?.id ? (profile?.name || '') : oppName,
+          loserName: winnerId === profile?.id ? oppName : (profile?.name || ''),
           winReason: matchData?.winReason || 'correct_word',
           correctWord: wordToUse
         })
@@ -2518,7 +2542,7 @@ export default function App() {
       matchUnsubscribeRef.current();
       matchUnsubscribeRef.current = null;
     }
-  }, [profile.id, profile.name, targetWord, settings.soundEnabled, attempts, activeMatch?.id, activeMatch?.matchId, activeMatch?.targetWord, activeMatch?.correctWord, activeMatch?.players]);
+  }, [profile?.id, profile?.name, targetWord, settings.soundEnabled, attempts, activeMatch?.id, activeMatch?.matchId, activeMatch?.targetWord, activeMatch?.correctWord, activeMatch?.players]);
 
   const handleInstantMatchEndRef = useRef(handleInstantMatchEnd);
   useEffect(() => {
@@ -2527,7 +2551,7 @@ export default function App() {
 
   // Firebase Cloud Messaging (FCM) & Push Notification Listener / Registration
   useEffect(() => {
-    if (!profile.id) return;
+    if (!profile || !profile.id) return;
 
     const saveTokenToServer = async (token: string) => {
       if (!token) return;
@@ -2596,7 +2620,7 @@ export default function App() {
       window.removeEventListener('fcm_message', handlePushMessage as any);
       window.removeEventListener('push_notification', handlePushMessage as any);
     };
-  }, [profile.id, settings.soundEnabled]);
+  }, [profile?.id, settings.soundEnabled]);
 
   // Real-time Firestore listener for incoming challenges (where challengedId == profile.id & status == 'pending')
   useEffect(() => {
@@ -2713,12 +2737,12 @@ export default function App() {
   // Dynamically synchronize opponent's real profile (username & avatar) from Firestore via Real-Time Listener throughout the game
   useEffect(() => {
     if (!activeMatch) return;
-    const oppEntry = Object.values(activeMatch.players || {}).find((p: any) => p && p.id && p.id !== profile.id) as any ||
-                     (activeMatch.player1?.id !== profile.id ? activeMatch.player1 : activeMatch.player2);
+    const oppEntry = Object.values(activeMatch.players || {}).find((p: any) => p && p.id && (!profile?.id || p.id !== profile.id)) as any ||
+                     (profile?.id && activeMatch.player1?.id !== profile.id ? activeMatch.player1 : activeMatch.player2);
     
     const oppId = oppEntry?.id;
 
-    if (!oppId || oppId === profile.id || oppId === 'opponent' || oppId === 'p1' || oppId === 'p2') {
+    if (!oppId || (profile?.id && oppId === profile.id) || oppId === 'opponent' || oppId === 'p1' || oppId === 'p2') {
       return;
     }
 
@@ -2783,7 +2807,7 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [activeMatch?.id, activeMatch?.matchId, profile.id]);
+  }, [activeMatch?.id, activeMatch?.matchId, profile?.id]);
 
   // Helper function to inspect match/room document and trigger immediate match end on victory/defeat
   const checkAndTriggerMatchEnd = useCallback((matchData: any) => {
@@ -2808,7 +2832,7 @@ export default function App() {
     }
 
     if (!serverWinnerUserId && matchData.winReason === 'opponent_left') {
-      serverWinnerUserId = auth.currentUser?.uid || profile.id;
+      serverWinnerUserId = auth.currentUser?.uid || profile?.id || '';
     }
 
     const isFinished = 
@@ -2875,8 +2899,8 @@ export default function App() {
         });
 
         const currentAuthUid = auth.currentUser?.uid;
-        const selfId = currentAuthUid || profile.id;
-        const activeProfile = { ...profile, id: selfId };
+        const selfId = currentAuthUid || profile?.id || '';
+        const activeProfile = profile ? { ...profile, id: selfId } : { id: selfId, name: 'Sen' };
         const resolved = resolveDuelPlayers(
           data.player1 || base.player1,
           data.player2 || base.player2,
@@ -2949,7 +2973,12 @@ export default function App() {
       clearInterval(pollInterval);
     };
 
-    // Fast polling fallback (every 800ms) across REST API & Firestore for mobile WebViews / APKs where streams can pause
+    // Low Latency Mode Algorithm:
+    // Dynamically calculate polling frequency based on Low Latency Mode setting, real-time WebSocket ping, and network status.
+    // When lowLatencyMode is active OR latency is high (> 150ms) OR network/socket drops, boost polling frequency to 350ms for ultra-fast sync.
+    const isLowLatencyActive = (settings.lowLatencyMode ?? true) || (wsLatency !== null && wsLatency > 150) || !isOnline;
+    const dynamicPollInterval = isLowLatencyActive ? 350 : 800;
+
     const pollInterval = setInterval(async () => {
       try {
         // Direct HTTPS REST API poll to Render Node server (100% immune to WebSocket / Firestore stream drops on mobile)
@@ -2977,7 +3006,7 @@ export default function App() {
       } catch (e) {
         // Silently ignore polling network blips
       }
-    }, 800);
+    }, dynamicPollInterval);
 
     return () => {
       if (matchUnsubscribeRef.current) {
@@ -2986,7 +3015,7 @@ export default function App() {
       }
       clearInterval(pollInterval);
     };
-  }, [activeMatch?.id, activeMatch?.matchId, checkAndTriggerMatchEnd]);
+  }, [activeMatch?.id, activeMatch?.matchId, checkAndTriggerMatchEnd, settings.lowLatencyMode, wsLatency, isOnline]);
 
   const handleLeaveMatchToMenu = useCallback(async () => {
     console.log('Centralized cleanup: returning to main menu');
@@ -2996,7 +3025,7 @@ export default function App() {
 
     if (activeMatch) {
       const matchId = activeMatch.matchId || activeMatch.id;
-      const opponentPlayer = Object.values(activeMatch.players || {}).find((p: any) => p?.id !== profile.id) as any;
+      const opponentPlayer = Object.values(activeMatch.players || {}).find((p: any) => p?.id && (!profile?.id || p?.id !== profile.id)) as any;
       if (matchId) {
         const leavePayload = {
           isGameOver: true,
@@ -3006,7 +3035,7 @@ export default function App() {
           winner: opponentPlayer?.id || 'opponent',
           winnerId: opponentPlayer?.id || 'opponent',
           finishedBy: opponentPlayer?.id || 'opponent',
-          loser: profile.id,
+          loser: profile?.id || '',
           updatedAt: new Date().toISOString()
         };
         setDoc(doc(db, 'matches', matchId), leavePayload, { merge: true }).catch(() => {});
@@ -3077,7 +3106,7 @@ export default function App() {
         console.warn('Database cleanup failed in handleLeaveMatchToMenu:', err);
       });
     }
-  }, [profile.id, opponentLeftDuringMatch]);
+  }, [profile?.id, opponentLeftDuringMatch]);
 
   // Expose yeniKelimeyeBasla globally for Android Native WebView integration
   useEffect(() => {
@@ -3194,10 +3223,13 @@ export default function App() {
       scheduleDailyNotifications();
     }
 
+    if (!profile) return;
+
     // Calculate updated profile state first, completely outside setProfile, to avoid side-effect triggers in render phase
+    const currentStats = profile.stats || { gamesPlayed: 0, gamesWon: 0, currentStreak: 0, maxStreak: 0, winDistribution: [0,0,0,0,0,0] };
     const newStats = {
-      ...profile.stats,
-      gamesPlayed: profile.stats.gamesPlayed + 1,
+      ...currentStats,
+      gamesPlayed: (currentStats.gamesPlayed || 0) + 1,
       currentStreak: 0
     };
 
@@ -3254,7 +3286,7 @@ export default function App() {
 
   // Submit Guessed Word
   const submitGuess = async () => {
-    const isSelfCompleted = activeMatch 
+    const isSelfCompleted = (activeMatch && profile?.id) 
       ? (activeMatch.players[profile.id]?.completed || activeMatch.status === 'ended' || isMatchEnded)
       : false;
 
@@ -3272,8 +3304,33 @@ export default function App() {
       return;
     }
 
+    const guess = turkishUpper(currentAttempt.trim());
+
+    // --- KELİME GEÇMİŞİ (WORD HISTORY) TEKRAR KONTROLÜ ---
+    const usedWords = new Set<string>();
+    attempts.forEach((a) => {
+      if (a?.word) usedWords.add(turkishUpper(a.word.trim()));
+    });
+
+    if (activeMatch) {
+      const selfUid = auth.currentUser?.uid || profile?.id;
+      const selfData = selfUid ? (activeMatch.players?.[selfUid] || activeMatch.players?.[profile?.id]) : null;
+      const selfAttempts = selfData?.attempts || (activeMatch.attempts && selfUid ? activeMatch.attempts[selfUid] : null);
+      if (Array.isArray(selfAttempts)) {
+        selfAttempts.forEach((a: any) => {
+          const w = typeof a === 'string' ? a : a?.word;
+          if (w) usedWords.add(turkishUpper(w.trim()));
+        });
+      }
+    }
+
+    if (usedWords.has(guess)) {
+      showToast('⚠️ Bu kelimeyi zaten denediniz! Farklı bir kelime girin.', 'error');
+      playErrorSound(settings.soundEnabled);
+      return;
+    }
+
     setIsValidating(true);
-    const guess = turkishUpper(currentAttempt);
 
     try {
       let isValid = false;
@@ -3357,6 +3414,26 @@ export default function App() {
         } catch (e) {
           console.warn('[REST Submit Guess] Error firing HTTP guess request:', e);
         }
+
+        // 3. Low Latency Mode Trigger: Instant poll trigger for ultra-fast match sync
+        if ((settings.lowLatencyMode ?? true) || (wsLatency !== null && wsLatency > 150)) {
+          setTimeout(() => {
+            fetch(getApiUrl(`/api/match-status?matchId=${targetMatchId}`))
+              .then(res => res.ok ? res.json() : null)
+              .then(data => {
+                if (data && !data.error) {
+                  // Direct snapshot update trigger
+                  const matchRef = doc(db, 'matches', targetMatchId);
+                  getDoc(matchRef).then(snap => {
+                    if (snap.exists()) {
+                      setActiveMatch((prev: any) => prev ? { ...prev, ...snap.data() } : prev);
+                    }
+                  }).catch(() => {});
+                }
+              })
+              .catch(() => {});
+          }, 120);
+        }
       }
 
       // Process guess locally for instant UI responsiveness & board/row updating
@@ -3425,7 +3502,7 @@ export default function App() {
       if (activeMatch) {
         const matchId = activeMatch.matchId || activeMatch.id;
         if (matchId) {
-          const currentAuthUid = auth.currentUser?.uid || profile.id;
+          const currentAuthUid = auth.currentUser?.uid || profile?.id || '';
           const matchRef = doc(db, 'matches', matchId);
           const roomRef = doc(db, 'rooms', matchId);
           const playerUpdate: any = {
@@ -3436,7 +3513,7 @@ export default function App() {
             [`attempts.${currentAuthUid}`]: updatedAttempts,
             updatedAt: new Date().toISOString()
           };
-          if (profile.id && profile.id !== currentAuthUid) {
+          if (profile?.id && profile.id !== currentAuthUid) {
             playerUpdate[`players.${profile.id}.attempts`] = updatedAttempts;
             playerUpdate[`players.${profile.id}.attemptsCount`] = updatedAttempts.length;
             playerUpdate[`players.${profile.id}.completed`] = (hasWon || updatedAttempts.length >= 6);
@@ -3455,7 +3532,7 @@ export default function App() {
             timerRef.current = null;
           }
 
-          const currentAuthUid = auth.currentUser?.uid || profile.id;
+          const currentAuthUid = auth.currentUser?.uid || profile?.id || '';
           const matchId = activeMatch.matchId || activeMatch.id;
           const oppEntry = Object.values(activeMatch.players || {}).find((p: any) => p && p.id !== currentAuthUid) as any;
           const oppId = oppEntry?.id || (activeMatch.player1?.id !== currentAuthUid ? activeMatch.player1?.id : activeMatch.player2?.id) || 'opponent';
@@ -3640,12 +3717,16 @@ export default function App() {
       timerRef.current = null;
     }
 
+    if (!profile) return;
+
+    const currentStats = profile.stats || { gamesPlayed: 0, gamesWon: 0, currentStreak: 0, maxStreak: 0, winDistribution: [0,0,0,0,0,0] };
+
     // 1. Calculate stats updates
-    const newPlayed = profile.stats.gamesPlayed + 1;
-    const newWon = profile.stats.gamesWon + 1;
-    const newStreak = profile.stats.currentStreak + 1;
-    const newMaxStreak = Math.max(newStreak, profile.stats.maxStreak);
-    const newDistribution = [...profile.stats.winDistribution];
+    const newPlayed = (currentStats.gamesPlayed || 0) + 1;
+    const newWon = (currentStats.gamesWon || 0) + 1;
+    const newStreak = (currentStats.currentStreak || 0) + 1;
+    const newMaxStreak = Math.max(newStreak, currentStats.maxStreak || 0);
+    const newDistribution = [...(currentStats.winDistribution || [0,0,0,0,0,0])];
     
     // AttemptCount is 1-indexed (index 0 corresponds to 1st attempt)
     if (attemptCount >= 1 && attemptCount <= 6) {
@@ -3662,7 +3743,7 @@ export default function App() {
 
     // Beş puandan fazla ödül hiçbir şekilde verilmesin. Puan silme diye de bir ceza olmasın.
     const cappedScoreAwarded = scoreAwarded > 0 ? Math.min(Math.max(scoreAwarded, 1), 5) : 0;
-    const newScore = profile.dailyScore + cappedScoreAwarded;
+    const newScore = (profile.dailyScore || 0) + cappedScoreAwarded;
     
     // Synchronously update the DOM element to keep responsiveness instant
     const scoreEl = document.getElementById('score');
@@ -3935,7 +4016,7 @@ export default function App() {
 
   // Handle Character keys typed on physical or virtual keyboard
   const onChar = (char: string) => {
-    const isSelfCompleted = activeMatch?.players[profile.id]?.completed || activeMatch?.status === 'ended' || isMatchEnded;
+    const isSelfCompleted = (activeMatch && profile?.id) ? (activeMatch.players[profile.id]?.completed || activeMatch.status === 'ended' || isMatchEnded) : false;
     const isPlaying = activeMatch ? (activeMatch.status === 'playing' || activeMatch.gameState === 'PLAYING') : (gameStatus === 'playing');
     if (!isPlaying || isValidating || isSelfCompleted) return;
     const normalized = turkishUpper(char);
@@ -3947,7 +4028,7 @@ export default function App() {
 
   // Handle Backspace
   const onDelete = () => {
-    const isSelfCompleted = activeMatch?.players[profile.id]?.completed || activeMatch?.status === 'ended' || isMatchEnded;
+    const isSelfCompleted = (activeMatch && profile?.id) ? (activeMatch.players[profile.id]?.completed || activeMatch.status === 'ended' || isMatchEnded) : false;
     const isPlaying = activeMatch ? (activeMatch.status === 'playing' || activeMatch.gameState === 'PLAYING') : (gameStatus === 'playing');
     if (!isPlaying || isValidating || isSelfCompleted) return;
     if (currentAttempt.length > 0) {
@@ -3989,8 +4070,9 @@ export default function App() {
   // Bind physical keyboard listeners exactly once on mount to prevent double keypresses and WebView input lag
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!profile || !profile.id) return;
       const currentMatch = activeMatchRef.current;
-      const isSelfCompleted = currentMatch?.players[profile.id]?.completed || currentMatch?.status === 'ended' || isMatchEndedRef.current;
+      const isSelfCompleted = currentMatch?.players?.[profile.id]?.completed || currentMatch?.status === 'ended' || isMatchEndedRef.current;
       const isPlaying = currentMatch ? (currentMatch.status === 'playing' || currentMatch.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
 
       if (
@@ -4132,9 +4214,9 @@ export default function App() {
       const challengerName = targetData?.challengerName || 'Savaşçı';
       const challengerAvatar = targetData?.challengerAvatar || '';
 
-      const currentUid = profile.id;
-      const currentName = profile.name || 'Savaşçı';
-      const currentAvatar = profile.avatarUrl || '';
+      const currentUid = auth.currentUser?.uid || profile?.id || '';
+      const currentName = profile?.name || auth.currentUser?.displayName || 'Savaşçı';
+      const currentAvatar = profile?.avatarUrl || auth.currentUser?.photoURL || '';
 
       const initialFirestoreMatch = {
         id: matchId,
@@ -4292,15 +4374,15 @@ export default function App() {
     }
 
     const currentAuthUser = auth.currentUser;
-    const currentUid = currentAuthUser?.uid || profile.id;
+    const currentUid = currentAuthUser?.uid || profile?.id || '';
     const selfName = getEffectiveSelfName(profile, currentAuthUser);
-    const selfAvatar = profile.avatarUrl || currentAuthUser?.photoURL || '';
+    const selfAvatar = profile?.avatarUrl || currentAuthUser?.photoURL || '';
 
     if (currentUid) {
       clearMatchmakingState(currentUid).catch((err) => {
         console.warn('Database cleanup failed in handleStartMatchmaking join:', err);
       });
-      if (currentUid !== profile.id) {
+      if (profile?.id && currentUid !== profile.id) {
         clearMatchmakingState(profile.id).catch(() => {});
       }
     }
@@ -4409,7 +4491,7 @@ export default function App() {
 
       const querySnap = await getDocs(q);
       const waitingDocs = querySnap.docs.filter(d => {
-        if (d.id === currentUid || d.id === profile.id) return false;
+        if (d.id === currentUid || (profile?.id && d.id === profile.id)) return false;
         const dData = d.data();
         return Number(dData.wordLength) === Number(targetLen);
       });
@@ -4643,7 +4725,7 @@ export default function App() {
     }
   };
 
-  const opponent = activeMatch ? Object.values(activeMatch.players || {}).find(p => (p as any)?.id !== profile.id) as any : null;
+  const opponent = activeMatch ? Object.values(activeMatch.players || {}).find(p => (p as any)?.id && (!profile?.id || (p as any)?.id !== profile.id)) as any : null;
   const isMatchEnded = !!(
     activeMatch && (
       activeMatch.status === 'ended' ||
@@ -4732,7 +4814,7 @@ export default function App() {
             <div className="w-12 h-12 border-4 border-[#FAF6E9] border-t-transparent rounded-full animate-spin" />
             <p className="text-sm font-bold text-[#FAF6E9]/60">Kullanıcı Oturumu Hazırlanıyor...</p>
           </div>
-        ) : !firebaseUser ? (
+        ) : (!firebaseUser || !profile) ? (
           <AuthScreen
             onAuthComplete={(updatedProfile, fUser) => {
               safeLocalStorage.removeItem('kelimesavasi_signing_in');
@@ -4824,26 +4906,37 @@ export default function App() {
               <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] flex flex-col gap-2 mb-2 animate-fadeIn">
                 {/* Row 1: Back to entry screen, Pes Et & Yenile */}
                 <div className="flex justify-between items-center w-full">
-                  <button
-                    onClick={() => {
-                      if (gameStatus === 'playing' && attempts.length > 0 && !isDailyPuzzle) {
-                        showConfirm(
-                          'Oyundan Çık',
-                          'Mevcut oyundan çıkıp giriş ekranına dönmek istiyor musunuz? İlerlemeniz sıfırlanacaktır.',
-                          () => {
-                            setHasEnteredGame(false);
-                            setIsDailyPuzzle(false);
-                          }
-                        );
-                      } else {
-                        setHasEnteredGame(false);
-                        setIsDailyPuzzle(false);
-                      }
-                    }}
-                    className="flex items-center gap-1 px-3 py-2 text-[11px] font-black uppercase tracking-wider bg-[#FAF6E9] hover:bg-[#F3EFE0] text-[#2E3748] border border-[#EBE6D5] rounded-xl shadow-md transition duration-150 active:scale-[0.97] cursor-pointer"
-                  >
-                    <span>Giriş Ekranı</span>
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => {
+                        if (gameStatus === 'playing' && attempts.length > 0 && !isDailyPuzzle) {
+                          showConfirm(
+                            'Oyundan Çık',
+                            'Mevcut oyundan çıkıp giriş ekranına dönmek istiyor musunuz? İlerlemeniz sıfırlanacaktır.',
+                            () => {
+                              setHasEnteredGame(false);
+                              setIsDailyPuzzle(false);
+                            }
+                          );
+                        } else {
+                          setHasEnteredGame(false);
+                          setIsDailyPuzzle(false);
+                        }
+                      }}
+                      className="flex items-center gap-1 px-3 py-2 text-[11px] font-black uppercase tracking-wider bg-[#FAF6E9] hover:bg-[#F3EFE0] text-[#2E3748] border border-[#EBE6D5] rounded-xl shadow-md transition duration-150 active:scale-[0.97] cursor-pointer"
+                    >
+                      <span>Giriş Ekranı</span>
+                    </button>
+
+                    <button
+                      onClick={() => setShowFriendsModal(true)}
+                      className="px-2.5 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-amber-300 border border-slate-700 transition duration-150 flex items-center gap-1 text-[11px] font-black uppercase tracking-wider font-mono cursor-pointer shrink-0"
+                      title="Arkadaş Listesini Aç"
+                    >
+                      <Users size={13} className="stroke-[2.5]" />
+                      <span className="hidden xs:inline">Arkadaşlar</span>
+                    </button>
+                  </div>
 
                   {!isDailyPuzzle && !activeMatch && (
                     <div className="flex items-center gap-1.5">
@@ -4937,21 +5030,21 @@ export default function App() {
         {activeMatch && (
           (() => {
             const currentAuthUid = auth.currentUser?.uid;
-            const selfId = currentAuthUid || profile.id;
-            const activeProfile = { ...profile, id: selfId };
+            const selfId = currentAuthUid || profile?.id || '';
+            const activeProfile = profile ? { ...profile, id: selfId } : { id: selfId, name: 'Sen' };
             const resolved = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, activeProfile, activeMatch.players);
             
             const p1 = resolved.player1;
             const p2 = resolved.player2;
 
-            const p1IsSelf = (p1.id === selfId || p1.uid === selfId || p1.id === profile.id || p1.uid === profile.id);
+            const p1IsSelf = (p1.id === selfId || p1.uid === selfId || (profile?.id && p1.id === profile.id) || (profile?.id && p1.uid === profile.id));
             const selfPlayer = p1IsSelf ? p1 : p2;
             const oppPlayer = p1IsSelf ? p2 : p1;
 
             const oppId = oppPlayer?.id || oppPlayer?.uid || 'opponent';
             const selfKey = selfPlayer?.id || selfPlayer?.uid || selfId;
 
-            const selfState = activeMatch.players?.[selfKey] || activeMatch.players?.[profile.id] || activeMatch.players?.[selfId] || {};
+            const selfState = activeMatch.players?.[selfKey] || (profile?.id ? activeMatch.players?.[profile.id] : {}) || activeMatch.players?.[selfId] || {};
             const oppKeys = [oppPlayer?.id, oppPlayer?.uid, oppPlayer?.profileId, oppId, 'p2', 'p1'].filter(Boolean);
             let oppState: any = {};
             for (const k of oppKeys) {
@@ -5011,6 +5104,20 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {/* Düşük Gecikme Modu (Low Latency Mode) Status Badge */}
+                    {((settings.lowLatencyMode ?? true) || (wsLatency !== null && wsLatency > 150)) && (
+                      <div 
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[9.5px] font-mono text-amber-300 select-none shadow-sm transition-all"
+                        title="Düşük Gecikme Modu (Otomatik 350ms Polling Eşitlemesi & Hızlı WebSocket Ping)"
+                      >
+                        <Zap size={11} className="text-amber-400 shrink-0 fill-amber-400/30 animate-pulse" />
+                        <span className="font-extrabold tracking-tight hidden sm:inline">DÜŞÜK GECİKME</span>
+                        <span className="text-[8.5px] font-bold text-amber-200 bg-amber-500/40 px-1 py-0.2 rounded font-mono">
+                          350ms
+                        </span>
+                      </div>
+                    )}
+
                     {/* Real-time WebSocket Signal Strength Icon & Latency Indicator */}
                     <div 
                       className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-black/50 border border-white/10 text-[10px] font-mono select-none transition-all duration-300"
@@ -5079,15 +5186,15 @@ export default function App() {
                     <div className="flex items-center justify-between gap-1 mb-1">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden">
-                          {profile.avatarUrl ? (
-                            <img src={profile.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          {profile?.avatarUrl ? (
+                            <img src={profile?.avatarUrl} alt="" className="w-full h-full object-cover" />
                           ) : (
-                            profile.name?.[0]?.toUpperCase() || 'S'
+                            profile?.name?.[0]?.toUpperCase() || 'S'
                           )}
                         </div>
                         <div className="min-w-0">
                           <span className="text-[9px] text-emerald-400 font-bold block leading-none font-mono">SEN</span>
-                          <span className="text-xs font-black text-white truncate block leading-tight">{profile.name || 'Sen'}</span>
+                          <span className="text-xs font-black text-white truncate block leading-tight">{profile?.name || 'Sen'}</span>
                         </div>
                       </div>
                       <div className="text-right shrink-0">
@@ -5151,7 +5258,7 @@ export default function App() {
         {/* Game Layout Wrapper */}
         <div className="w-full flex-1 min-h-0 flex flex-col items-stretch justify-stretch gap-0.5 sm:gap-1 relative z-10">
           {/* Game Area Card */}
-          <div className={`w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto card-theme rounded-[1.5rem] border border-[#3E485A]/30 p-2 sm:p-3 shadow-2xl flex flex-col items-center ${isMatchEnded || gameStatus === 'won' || gameStatus === 'lost' || Boolean(activeMatch && (activeMatch.status === 'ended' || activeMatch.players[profile.id]?.completed)) ? 'game-ended justify-center my-auto' : 'justify-between'} flex-1 min-h-0 overflow-hidden gap-y-0.5 transition-all duration-200 relative text-white`} id="game-area-card">
+          <div className={`w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto card-theme rounded-[1.5rem] border border-[#3E485A]/30 p-2 sm:p-3 shadow-2xl flex flex-col items-center ${isMatchEnded || gameStatus === 'won' || gameStatus === 'lost' || Boolean(activeMatch && (activeMatch.status === 'ended' || (profile?.id && activeMatch.players[profile.id]?.completed))) ? 'game-ended justify-center my-auto' : 'justify-between'} flex-1 min-h-0 overflow-hidden gap-y-0.5 transition-all duration-200 relative text-white`} id="game-area-card">
           {/* Subtle atmospheric ambient glow inside the card */}
 
 
@@ -5186,15 +5293,25 @@ export default function App() {
             <div className="w-full flex justify-between items-center mb-2 px-1 border-b border-[#3E485A]/40 pb-2 relative z-10">
               {gameStatus === 'playing' ? (
                 <>
-                  <div className="flex items-center gap-2">
-                    <Trophy size={16} className="text-amber-500" />
-                    <span className="text-xs font-bold text-gray-300 font-mono">
+                  <button
+                    type="button"
+                    onClick={() => setShowWordHistoryModal(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800/80 border border-slate-700 hover:border-amber-500/50 transition cursor-pointer active:scale-95 text-left"
+                    title="Kelime Geçmişini İncele"
+                  >
+                    <Trophy size={15} className="text-amber-500 shrink-0" />
+                    <span className="text-xs font-bold text-gray-200 font-mono">
                       Deneme: {attempts.length}/6
                     </span>
-                  </div>
+                    {attempts.length > 0 && (
+                      <span className="text-[8.5px] font-black font-mono px-1.5 py-0.2 bg-amber-500/20 text-amber-300 rounded-full border border-amber-500/30">
+                        Geçmiş 📜
+                      </span>
+                    )}
+                  </button>
 
                   {/* Shimmering Gold Wallet in playing screen top bar */}
-                  <GoldWallet gold={profile.gold !== undefined ? profile.gold : 20} />
+                  <GoldWallet gold={profile?.gold !== undefined ? profile.gold : 20} />
 
                   <div className="flex items-center gap-2">
                     {activeMatch ? (
@@ -5244,41 +5361,30 @@ export default function App() {
             <div className="flex-1 min-h-[0.25rem] sm:min-h-[0.5rem]" />
           )}
 
-          {/* Letter Grid */}
-          {!isMatchEnded && (
-            <GameBoard
-              attempts={attempts}
-              currentAttempt={currentAttempt}
-              wordLength={wordLength}
-              boardTheme={settings.boardTheme}
-              isGameOver={gameStatus !== 'playing'}
-              revealedHints={revealedHints}
-            />
-          )}
-
-          {/* 💡 ACTIVE WORD SUGGESTION DRAWER */}
-          {activeWordSuggestion && gameStatus === 'playing' && !isMatchEnded && (
-            <div className="w-full max-w-sm mx-auto bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-3 text-center mb-1 mt-1 animate-scale-up flex items-center justify-between gap-3 shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="text-base">💡</span>
-                <div className="text-left">
-                  <span className="text-[9px] text-gray-400 font-mono block uppercase">Önerilen Kelime</span>
-                  <strong className="text-sm font-black text-emerald-400 tracking-wider uppercase font-mono leading-none">{activeWordSuggestion}</strong>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  if (activeWordSuggestion && activeWordSuggestion.length === wordLength) {
-                    setCurrentAttempt(activeWordSuggestion);
-                  }
-                  playClickSound(settings.soundEnabled);
-                }}
-                className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition active:scale-95 cursor-pointer shadow-md"
-              >
-                Doldur
-              </button>
-            </div>
-          )}
+          {/* Letter Grid & Duplicate Warning */}
+          {!isMatchEnded && (() => {
+            const normAttempt = turkishUpper(currentAttempt.trim());
+            const isDup = normAttempt.length === wordLength && attempts.some(a => turkishUpper(a.word.trim()) === normAttempt);
+            return (
+              <>
+                {isDup && (
+                  <div className="w-full max-w-xs mx-auto mb-1.5 py-1 px-3 bg-rose-500/20 border border-rose-500/40 rounded-xl flex items-center justify-center gap-1.5 text-rose-300 text-[11px] font-extrabold shadow-lg shadow-rose-500/10 animate-pulse select-none">
+                    <AlertCircle size={13} className="text-rose-400 shrink-0" />
+                    <span>Kelime Geçmişi: Bu kelimeyi zaten denediniz!</span>
+                  </div>
+                )}
+                <GameBoard
+                  attempts={attempts}
+                  currentAttempt={currentAttempt}
+                  wordLength={wordLength}
+                  boardTheme={settings.boardTheme}
+                  isGameOver={gameStatus !== 'playing'}
+                  revealedHints={revealedHints}
+                  isDuplicateAttempt={isDup}
+                />
+              </>
+            );
+          })()}
 
           {/* 🤫 HINT, SUGGESTION & AD REWARD CONTROLS ROW */}
           {!isMatchEnded && gameStatus === 'playing' && !activeMatch && (
@@ -5434,7 +5540,7 @@ export default function App() {
           )}
 
           {/* Action Buttons Above Keyboard */}
-          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && activeMatch.players[profile.id]?.completed) && (
+          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && profile?.id && activeMatch.players[profile.id]?.completed) && (
             <BottomBar
               currentGuess={currentAttempt}
               wordLength={wordLength}
@@ -5451,12 +5557,12 @@ export default function App() {
           )}
 
           {/* Spacer C */}
-          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && activeMatch.players[profile.id]?.completed) && (
+          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && profile?.id && activeMatch.players[profile.id]?.completed) && (
             <div className="flex-1 min-h-[0.25rem] sm:min-h-[0.5rem]" />
           )}
 
           {/* Virtual Keyboard */}
-          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && activeMatch.players[profile.id]?.completed) && (
+          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && profile?.id && activeMatch.players[profile.id]?.completed) && (
             <Keyboard
               onChar={onChar}
               onDelete={onDelete}
@@ -5469,7 +5575,7 @@ export default function App() {
           )}
 
           {/* Waiting for Opponent Card */}
-          {!isMatchEnded && activeMatch && activeMatch.players[profile.id]?.completed && (
+          {!isMatchEnded && activeMatch && profile?.id && activeMatch.players[profile.id]?.completed && (
             <div className="w-full max-w-sm mx-auto bg-slate-900/95 border border-amber-500/25 rounded-3xl p-5 text-center space-y-4 shadow-xl animate-scale-up" id="opponent-waiting-container">
               <div className="flex flex-col items-center">
                 <div className="relative">
@@ -5485,7 +5591,7 @@ export default function App() {
 
               {/* Opponent Status Display */}
               {Object.entries(activeMatch.players).map(([pId, pState]: [string, any]) => {
-                const isOpponent = pId !== profile.id;
+                const isOpponent = pId !== profile?.id;
                 if (!isOpponent) return null;
                 return (
                   <div key={pId} className="bg-black/25 rounded-2xl border border-white/5 p-3 flex justify-between items-center text-xs">
@@ -5569,19 +5675,19 @@ export default function App() {
                       <h4 className="text-[9px] font-black text-amber-300/80 tracking-widest uppercase font-mono text-left font-bold">OYUNCU DETAYLARI</h4>
                       {(() => {
                         const currentAuthUid = auth.currentUser?.uid;
-                        const selfId = currentAuthUid || profile.id;
-                        const activeProfile = { ...profile, id: selfId };
+                        const selfId = currentAuthUid || profile?.id || '';
+                        const activeProfile = profile ? { ...profile, id: selfId } : { id: selfId, name: 'Sen' };
                         const { player1: resolvedP1, player2: resolvedP2 } = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, activeProfile, activeMatch.players);
                         const duelPlayers = [resolvedP1, resolvedP2].filter(Boolean);
 
                         return duelPlayers.map((p: any, index: number) => {
                           const pId = p.id || p.uid || (index === 0 ? 'p1' : 'p2');
-                          const isSelf = pId === selfId || pId === profile.id || p.id === selfId || p.uid === selfId || p.id === profile.id || p.uid === profile.id;
+                          const isSelf = pId === selfId || (profile?.id && pId === profile.id) || p.id === selfId || p.uid === selfId || (profile?.id && (p.id === profile.id || p.uid === profile.id));
 
                           // Determine clean display name
                           let displayName = '';
                           if (isSelf) {
-                            displayName = `${profile.name || profile.username || profile.displayName || 'Oyuncu'} (Sen)`;
+                            displayName = `${profile?.name || profile?.username || profile?.displayName || 'Oyuncu'} (Sen)`;
                           } else {
                             displayName = p.name || p.username || p.displayName || 'Rakip';
                           }
@@ -5840,7 +5946,7 @@ export default function App() {
       )}
 
       {/* Stats Modal */}
-      {showStatsModal && (
+      {showStatsModal && profile && (
         <StatsModal
           profile={profile}
           onClose={() => setShowStatsModal(false)}
@@ -5849,7 +5955,7 @@ export default function App() {
       )}
 
       {/* Missions Modal */}
-      {showMissionsModal && (
+      {showMissionsModal && profile && (
         <MissionsModal
           profile={profile}
           onClose={() => setShowMissionsModal(false)}
@@ -5967,8 +6073,103 @@ export default function App() {
         </div>
       )}
 
+      {/* Word History Modal (Kelime Geçmişi İnceleme) */}
+      {showWordHistoryModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fadeIn" id="word-history-modal">
+          <div className="w-full max-w-sm bg-[#161D2B] border-2 border-amber-500/40 rounded-3xl p-5 shadow-2xl space-y-4 text-left relative text-[#FAF6E9] animate-scaleUp">
+            <button
+              type="button"
+              onClick={() => setShowWordHistoryModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-full bg-slate-800 border border-slate-700 cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="flex items-center gap-2.5 border-b border-slate-700/60 pb-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold text-lg">
+                📜
+              </div>
+              <div>
+                <h3 className="text-base font-black text-amber-300 tracking-wide uppercase">Kelime Geçmişi</h3>
+                <p className="text-[11px] text-slate-400">Bu turda denediğiniz tüm kelimeler ({attempts.length}/6)</p>
+              </div>
+            </div>
+
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1 custom-scrollbar">
+              {attempts.length === 0 ? (
+                <div className="py-8 text-center text-slate-400 text-xs italic bg-slate-900/40 rounded-2xl border border-slate-800/80">
+                  Henüz bir kelime denemediniz.
+                </div>
+              ) : (
+                attempts.map((att, idx) => (
+                  <div key={idx} className="flex items-center justify-between p-2.5 bg-slate-900/70 rounded-xl border border-slate-700/60 font-mono text-xs">
+                    <span className="text-amber-400 font-bold text-[10px] w-6">#{idx + 1}</span>
+                    <div className="flex gap-1">
+                      {att.word.split('').map((char, cIdx) => {
+                        const fb = att.feedback?.[cIdx];
+                        const bg = fb === 'green' 
+                          ? 'bg-emerald-500 text-white font-black shadow-sm' 
+                          : fb === 'orange' 
+                          ? 'bg-amber-500 text-white font-black shadow-sm' 
+                          : 'bg-slate-700 text-slate-300 font-bold';
+                        return (
+                          <span key={cIdx} className={`w-6 h-6 rounded flex items-center justify-center text-xs uppercase ${bg}`}>
+                            {char}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-[11px] text-amber-200/90 leading-relaxed space-y-1">
+              <p className="font-extrabold text-amber-300 flex items-center gap-1.5">
+                <Info size={13} className="shrink-0 text-amber-400" />
+                Tekrar Kelime Engeli
+              </p>
+              <p className="text-[10.5px]">
+                Aynı kelimelerin tekrar yazılması engellenmektedir. Böylece deneme haklarınız boşa harcanmaz.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowWordHistoryModal(false)}
+              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition cursor-pointer shadow-lg shadow-amber-500/20"
+            >
+              Tamam
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Friends Modal */}
+      {showFriendsModal && profile && (
+        <FriendsModal
+          profile={profile}
+          onClose={() => setShowFriendsModal(false)}
+          onUpdateFriends={(newFriends: string[]) => {
+            setProfile(prev => ({
+              ...prev,
+              friends: newFriends
+            }));
+          }}
+          isOnline={isOnline}
+          lobbyPlayers={lobbyPlayers}
+          onChallengePlayer={(player, wLen) => {
+            setShowFriendsModal(false);
+            handleChallengePlayer(player, wLen);
+          }}
+          duelWordLength={duelWordLength}
+          wordLength={wordLength}
+          showToast={showToast}
+        />
+      )}
+
       {/* Settings Modal */}
-      {showSettingsModal && (
+      {showSettingsModal && profile && (
         <SettingsModal
           settings={settings}
           onChangeSettings={setSettings}
