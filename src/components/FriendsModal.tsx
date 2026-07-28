@@ -15,7 +15,7 @@ import {
   Shield,
   UserCheck
 } from 'lucide-react';
-import { UserProfile, FriendRequest } from '../types';
+import { UserProfile, FriendRequest, isImageUrl } from '../types';
 import { 
   sendFriendRequestInFirestore, 
   acceptFriendRequestInFirestore, 
@@ -382,10 +382,10 @@ export default function FriendsModal({
                           {/* Avatar with status indicator */}
                           <div className="w-10 h-10 rounded-2xl bg-slate-800 flex items-center justify-center font-bold text-sm border border-slate-700 shrink-0 relative">
                             {friend.avatarUrl ? (
-                              friend.avatarUrl.length < 4 ? (
-                                <span className="text-base select-none">{friend.avatarUrl}</span>
-                              ) : (
+                              isImageUrl(friend.avatarUrl) ? (
                                 <img src={friend.avatarUrl} alt="avatar" className="w-full h-full object-cover rounded-2xl" referrerPolicy="no-referrer" />
+                              ) : (
+                                <span className="text-base select-none">{friend.avatarUrl}</span>
                               )
                             ) : (
                               <span className="text-slate-300">{friend.name ? friend.name.charAt(0).toUpperCase() : '?'}</span>
@@ -511,10 +511,10 @@ export default function FriendsModal({
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div className="w-9 h-9 rounded-2xl bg-slate-800 flex items-center justify-center font-bold text-xs border border-slate-700 shrink-0">
                             {user.avatarUrl ? (
-                              user.avatarUrl.length < 4 ? (
-                                <span className="text-sm select-none">{user.avatarUrl}</span>
-                              ) : (
+                              isImageUrl(user.avatarUrl) ? (
                                 <img src={user.avatarUrl} alt="avatar" className="w-full h-full object-cover rounded-2xl" referrerPolicy="no-referrer" />
+                              ) : (
+                                <span className="text-sm select-none">{user.avatarUrl}</span>
                               )
                             ) : (
                               <span className="text-slate-300">{user.name ? user.name.charAt(0).toUpperCase() : '?'}</span>
@@ -575,10 +575,10 @@ export default function FriendsModal({
                       <div className="flex items-center gap-2.5 min-w-0">
                         <div className="w-9 h-9 rounded-2xl bg-slate-800 flex items-center justify-center font-bold text-xs border border-slate-700 shrink-0">
                           {reqUser.avatarUrl ? (
-                            reqUser.avatarUrl.length < 4 ? (
-                              <span className="text-sm select-none">{reqUser.avatarUrl}</span>
-                            ) : (
+                            isImageUrl(reqUser.avatarUrl) ? (
                               <img src={reqUser.avatarUrl} alt="avatar" className="w-full h-full object-cover rounded-2xl" referrerPolicy="no-referrer" />
+                            ) : (
+                              <span className="text-sm select-none">{reqUser.avatarUrl}</span>
                             )
                           ) : (
                             <span className="text-slate-300">{reqUser.name ? reqUser.name.charAt(0).toUpperCase() : '?'}</span>

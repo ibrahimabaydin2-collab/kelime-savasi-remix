@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Trash2, Sparkles, RotateCcw } from 'lucide-react';
 
 interface BottomBarProps {
@@ -10,7 +10,7 @@ interface BottomBarProps {
   onSubmit: () => void;
 }
 
-export default function BottomBar({
+function BottomBar({
   currentGuess,
   wordLength,
   isValidating,
@@ -33,9 +33,10 @@ export default function BottomBar({
             : 'bg-[#34241A]/65 text-[#8C7A6B] border-[#503E32]/40 shadow-none cursor-not-allowed'
         }`}
         id="clear-row-button"
+        title="Tahmin satırını temizle"
       >
-        <Trash2 size={14} />
-        <span>TEMİZLE</span>
+        <Trash2 size={14} className="shrink-0" />
+        <span className="truncate">TEMİZLE</span>
       </button>
 
       {/* SUBMIT BUTTON (DENE) */}
@@ -51,16 +52,19 @@ export default function BottomBar({
       >
         {isValidating ? (
           <>
-            <RotateCcw className="animate-spin" size={14} />
-            DOĞRULANIYOR...
+            <RotateCcw className="animate-spin shrink-0" size={14} />
+            <span className="truncate">DOĞRULANIYOR...</span>
           </>
         ) : (
           <>
-            <Sparkles size={14} className={currentGuess.length === wordLength ? "animate-bounce text-emerald-300" : ""} />
-            DENE
+            <Sparkles size={14} className={`shrink-0 ${currentGuess.trim().length === wordLength && !currentGuess.includes(' ') ? "animate-bounce text-emerald-300" : ""}`} />
+            <span className="truncate">DENE</span>
           </>
         )}
       </button>
     </div>
   );
 }
+
+export default memo(BottomBar);
+

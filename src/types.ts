@@ -63,3 +63,8 @@ export interface NetworkLogEntry {
   type: 'info' | 'error' | 'success' | 'sent' | 'received';
   message: string;
 }
+
+export function isImageUrl(url?: string | null): boolean {
+  if (!url) return false;
+  return url.startsWith('data:image/') || url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:');
+}

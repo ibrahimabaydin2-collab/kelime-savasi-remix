@@ -1,5 +1,5 @@
 // Complete rebuild stamp for GitHub Actions: 2026-07-23 v1.0.2
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import confetti from 'canvas-confetti';
 import {
   playClickSound,
@@ -25,8 +25,8 @@ import AuthScreen from './components/AuthScreen';
 import BadgeUnlockedModal from './components/BadgeUnlockedModal';
 import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
-import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types';
-import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut, Wifi, WifiOff, Zap, Users } from 'lucide-react';
+import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry, isImageUrl } from './types';
+import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut, Wifi, WifiOff, Zap, Users, ArrowDownFromLine } from 'lucide-react';
 import { getRandomWord, isWordInCuratedList, getDailyWordAndLength, COMMON_TURKISH_WORDS, CLEANED_TURKISH_WORDS } from './data/wordlist';
 import { turkishUpper, turkishLower, validateTurkishLinguistics } from './utils/turkish';
 import { getApiUrl, getWsUrl, validateWordClientSide } from './utils/api';
@@ -1284,26 +1284,49 @@ export default function App() {
     if (!deviceId) return;
     const checkDailyStatusOnStart = async () => {
       try {
-        const response = await fetch(getApiUrl(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`));
-        if (response.ok) {
-          const data = await response.json();
-          const todayDateStr = getDailyWordAndLength().dateStr;
-          if (data.solved || data.failed) {
-            safeLocalStorage.setItem('kelimesavasi_daily_completed_date', todayDateStr);
-            safeLocalStorage.setItem('last_played_date', todayDateStr);
-            safeLocalStorage.setItem('is_daily_completed', 'true');
-            if (typeof window !== 'undefined' && (window as any).AndroidBridge && (window as any).AndroidBridge.saveDailyPuzzleStatus) {
-              try {
-                (window as any).AndroidBridge.saveDailyPuzzleStatus(todayDateStr, true);
-              } catch (e) {
-                console.error(e);
-              }
+        const todayDateStr = getDailyWordAndLength().dateStr;
+        let data: any = null;
+
+        try {
+          const response = await fetch(getApiUrl(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`));
+          if (response.ok) {
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+              data = await response.json();
             }
-            setIsDailyPuzzleCompletedToday(true);
+          }
+        } catch (fetchErr) {
+          console.warn('API fetch for daily puzzle initial status failed, attempting direct Firestore fallback:', fetchErr);
+        }
+
+        // Direct Firestore Client Fallback if API response was unavailable or non-JSON
+        if (!data) {
+          try {
+            const docRef = doc(db, 'daily_puzzles', `${todayDateStr}_${deviceId}`);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+              data = docSnap.data();
+            }
+          } catch (fsErr) {
+            console.warn('Firestore fallback fetch for daily puzzle failed:', fsErr);
           }
         }
+
+        if (data && (data.solved || data.failed)) {
+          safeLocalStorage.setItem('kelimesavasi_daily_completed_date', todayDateStr);
+          safeLocalStorage.setItem('last_played_date', todayDateStr);
+          safeLocalStorage.setItem('is_daily_completed', 'true');
+          if (typeof window !== 'undefined' && (window as any).AndroidBridge && (window as any).AndroidBridge.saveDailyPuzzleStatus) {
+            try {
+              (window as any).AndroidBridge.saveDailyPuzzleStatus(todayDateStr, true);
+            } catch (e) {
+              console.error(e);
+            }
+          }
+          setIsDailyPuzzleCompletedToday(true);
+        }
       } catch (e) {
-        console.warn('Daily puzzle initial status fetch skipped or failed:', e);
+        console.warn('Daily puzzle initial status check failed:', e);
       }
     };
     checkDailyStatusOnStart();
@@ -1996,6 +2019,16 @@ export default function App() {
               setMatchmakingStatus('idle');
               setIsMatchmakingLocked(false);
               
+              if (queueUnsubscribeRef.current) {
+                try { queueUnsubscribeRef.current(); } catch (e) {}
+                queueUnsubscribeRef.current = null;
+              }
+              const currentUidClean = auth.currentUser?.uid || profile?.id;
+              if (currentUidClean) {
+                deleteDoc(doc(db, 'matchmaking_queue', currentUidClean)).catch(() => {});
+                deleteDoc(doc(db, `matchmaking_queue_${data.wordLength || 5}`, currentUidClean)).catch(() => {});
+              }
+
               const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
               const target = turkishUpper(data.targetWord || data.correctWord || '');
@@ -2016,6 +2049,16 @@ export default function App() {
               setDuelWordLength(matchLen);
               duelWordLengthRef.current = matchLen;
             } else if (data.type === 'match_ready') {
+              if (queueUnsubscribeRef.current) {
+                try { queueUnsubscribeRef.current(); } catch (e) {}
+                queueUnsubscribeRef.current = null;
+              }
+              const currentUidClean = auth.currentUser?.uid || profile?.id;
+              if (currentUidClean) {
+                deleteDoc(doc(db, 'matchmaking_queue', currentUidClean)).catch(() => {});
+                deleteDoc(doc(db, `matchmaking_queue_${data.wordLength || 5}`, currentUidClean)).catch(() => {});
+              }
+
               const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
               const target = turkishUpper(data.targetWord || data.correctWord || '');
@@ -2059,6 +2102,15 @@ export default function App() {
               showToast('Rakip bağlandı! Oyun hazırlanıyor... ⚔️', 'info');
             } else if (data.type === 'match_start') {
               console.log('[WebSocket Manager] Match START:', data);
+              if (queueUnsubscribeRef.current) {
+                try { queueUnsubscribeRef.current(); } catch (e) {}
+                queueUnsubscribeRef.current = null;
+              }
+              const currentUidClean = auth.currentUser?.uid || profile?.id;
+              if (currentUidClean) {
+                deleteDoc(doc(db, 'matchmaking_queue', currentUidClean)).catch(() => {});
+                deleteDoc(doc(db, `matchmaking_queue_${data.wordLength || 5}`, currentUidClean)).catch(() => {});
+              }
               const target = turkishUpper(data.targetWord || data.correctWord || '');
               const matchLen = Number(data.wordLength) || target.length || 5;
               if (target) {
@@ -3585,7 +3637,7 @@ export default function App() {
       return;
     }
 
-    if (currentAttempt.length !== wordLength) {
+    if (currentAttempt.includes(' ') || currentAttempt.trim().length !== wordLength) {
       showToast('Lütfen tüm harfleri doldurun!', 'error');
       playErrorSound(settings.soundEnabled);
       return;
@@ -4320,26 +4372,53 @@ export default function App() {
 
   // Handle Character keys typed on physical or virtual keyboard
   const onChar = useCallback((char: string) => {
-    const isSelfCompleted = (activeMatchRef.current && profile?.id) ? (activeMatchRef.current.players[profile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
+    const currentProfile = profileRef.current;
+    const currentSettings = settingsRef.current;
+    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
     const isPlaying = activeMatchRef.current ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
     if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
     const normalized = turkishUpper(char);
-    if (currentAttemptRef.current.length < wordLengthRef.current && /^[A-ZÇĞİÖŞÜ]$/i.test(normalized)) {
-      setCurrentAttempt((prev) => prev + normalized);
-      playClickSound(settings.soundEnabled);
-    }
-  }, [profile?.id, settings.soundEnabled]);
+    if (!/^[A-ZÇĞİÖŞÜ]$/i.test(normalized)) return;
+
+    setCurrentAttempt((prev) => {
+      const chars = prev.padEnd(wordLengthRef.current, ' ').split('');
+      const emptyIndex = chars.findIndex((c) => c === ' ');
+      if (emptyIndex !== -1) {
+        chars[emptyIndex] = normalized;
+        playClickSound(currentSettings.soundEnabled);
+        return chars.join('');
+      }
+      return prev;
+    });
+  }, []);
 
   // Handle Backspace
   const onDelete = useCallback(() => {
-    const isSelfCompleted = (activeMatchRef.current && profile?.id) ? (activeMatchRef.current.players[profile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
+    const currentProfile = profileRef.current;
+    const currentSettings = settingsRef.current;
+    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
     const isPlaying = activeMatchRef.current ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
     if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
-    if (currentAttemptRef.current.length > 0) {
-      playDeleteSound(settings.soundEnabled);
-    }
-    setCurrentAttempt((prev) => prev.slice(0, -1));
-  }, [profile?.id, settings.soundEnabled]);
+
+    setCurrentAttempt((prev) => {
+      const chars = prev.padEnd(wordLengthRef.current, ' ').split('');
+      let lastNonSpaceIndex = -1;
+      for (let i = chars.length - 1; i >= 0; i--) {
+        if (chars[i] !== ' ') {
+          lastNonSpaceIndex = i;
+          break;
+        }
+      }
+      if (lastNonSpaceIndex !== -1) {
+        playDeleteSound(currentSettings.soundEnabled);
+        chars[lastNonSpaceIndex] = ' ';
+        const result = chars.join('');
+        if (result.trim() === '') return '';
+        return result;
+      }
+      return prev;
+    });
+  }, []);
 
   // References to keep the physical keyboard listener persistent and prevent listener duplication/conflicts
   const currentAttemptRef = useRef(currentAttempt);
@@ -4350,10 +4429,76 @@ export default function App() {
   const showLobbyModalRef = useRef(showLobbyModal);
   const showCongratsModalRef = useRef(showCongratsModal);
   const wordLengthRef = useRef(wordLength);
+  const attemptsRef = useRef(attempts);
   const onCharRef = useRef(onChar);
   const onDeleteRef = useRef(onDelete);
   const submitGuessRef = useRef(submitGuess);
   const isMatchEndedRef = useRef(false);
+  const settingsRef = useRef(settings);
+  const profileRef = useRef(profile);
+
+  // Clear current attempt
+  const handleClearAttempt = useCallback(() => {
+    if (currentAttemptRef.current.length > 0) {
+      setCurrentAttempt('');
+      playDeleteSound(settingsRef.current.soundEnabled);
+    }
+  }, []);
+
+  // Submit current guess
+  const handleSubmitGuess = useCallback(() => {
+    submitGuessRef.current();
+  }, []);
+
+  // Transfer green (correct) letters from a specific row attempt to current attempt row
+  const handleTransferRowGreenLetters = useCallback((rowIndex: number) => {
+    const currentProfile = profileRef.current;
+    const currentSettings = settingsRef.current;
+    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) 
+      ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current)
+      : false;
+    const isPlaying = activeMatchRef.current 
+      ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING')
+      : (gameStatusRef.current === 'playing');
+
+    if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
+
+    const currentAttempts = attemptsRef.current || [];
+    const targetRow = currentAttempts[rowIndex];
+    if (!targetRow || !targetRow.feedback || !Array.isArray(targetRow.feedback)) return;
+
+    const currentWordLen = wordLengthRef.current || 5;
+    const greenMap: { [index: number]: string } = {};
+    let hasGreen = false;
+
+    targetRow.feedback.forEach((status, idx) => {
+      if (status === 'green' && targetRow.word && targetRow.word[idx]) {
+        greenMap[idx] = targetRow.word[idx].toUpperCase();
+        hasGreen = true;
+      }
+    });
+
+    if (!hasGreen) {
+      showToast('Bu satırda yeşil harf bulunmuyor.', 'info');
+      return;
+    }
+
+    const currentPadded = currentAttemptRef.current.padEnd(currentWordLen, ' ').split('');
+    const newArr = Array(currentWordLen).fill(' ');
+
+    for (let i = 0; i < currentWordLen; i++) {
+      if (greenMap[i] !== undefined) {
+        newArr[i] = greenMap[i];
+      } else if (currentPadded[i] !== ' ' && /^[A-ZÇĞİÖŞÜ]$/i.test(currentPadded[i])) {
+        newArr[i] = currentPadded[i];
+      }
+    }
+
+    const resultStr = newArr.join('');
+    setCurrentAttempt(resultStr);
+    playClickSound(currentSettings.soundEnabled);
+    showToast(`${rowIndex + 1}. satırdaki yeşil harfler aktarıldı! ✨`, 'success');
+  }, []);
 
   useEffect(() => {
     currentAttemptRef.current = currentAttempt;
@@ -4365,10 +4510,13 @@ export default function App() {
     showLobbyModalRef.current = showLobbyModal;
     showCongratsModalRef.current = showCongratsModal;
     wordLengthRef.current = wordLength;
+    attemptsRef.current = attempts;
     onCharRef.current = onChar;
     onDeleteRef.current = onDelete;
     submitGuessRef.current = submitGuess;
     isMatchEndedRef.current = isMatchEnded;
+    settingsRef.current = settings;
+    profileRef.current = profile;
   });
 
   // Bind physical keyboard listeners exactly once on mount to prevent double keypresses and WebView input lag
@@ -4807,8 +4955,21 @@ export default function App() {
         if (snap.exists()) {
           const data = snap.data();
           if (data.status === 'matched' && data.matchId) {
-            console.log("[Firestore Matchmaking] Matched via Firestore snapshot! Match ID:", data.matchId);
-            const matchLen = Number(data.wordLength || targetLen);
+            if (hasEnteredGameRef.current || (activeMatchRef.current && (activeMatchRef.current.gameState === 'PLAYING' || activeMatchRef.current.status === 'playing'))) {
+              console.warn("[Firestore Queue Snapshot] Player is already in an active match, ignoring duplicate match snapshot:", data.matchId);
+              deleteDoc(myQueueRef).catch(() => {});
+              if (queueUnsubscribeRef.current) {
+                queueUnsubscribeRef.current();
+                queueUnsubscribeRef.current = null;
+              }
+              return;
+            }
+            const matchLen = Number(data.wordLength);
+            if (!matchLen || matchLen !== targetLen) {
+              console.warn(`[Firestore Queue Match Mismatch] Rejection: Expected ${targetLen} letters, but matched data had ${data.wordLength}`);
+              return;
+            }
+            console.log("[Firestore Matchmaking] Matched via Firestore snapshot! Match ID:", data.matchId, "Word Length:", matchLen);
             const word = data.correctWord || data.targetWord;
             
             const activeProfile = { ...profile, id: currentUid, name: selfName };
@@ -4853,92 +5014,100 @@ export default function App() {
         console.warn("[Firestore Queue Listener] Snapshot stream notification:", error?.message || error);
       });
 
-      // Search Firestore queue for waiting opponents in the isolated word length collection
-      let querySnap;
-      try {
-        const qStrict = query(
-          collection(db, queueCollectionName),
-          where('status', '==', 'waiting')
-        );
-        querySnap = await getDocs(qStrict);
-      } catch (err) {
-        console.warn("[Firestore Queue Search Notice]:", err);
-      }
+      // Search Firestore queue ONLY if WebSocket is not active as a fallback, to prevent dual-engine race conditions
+      const isWsActive = socketRef.current && socketRef.current.readyState === WebSocket.OPEN;
+      if (!isWsActive) {
+        let querySnap;
+        try {
+          const qStrict = query(
+            collection(db, queueCollectionName),
+            where('status', '==', 'waiting')
+          );
+          querySnap = await getDocs(qStrict);
+        } catch (err) {
+          console.warn("[Firestore Queue Search Notice]:", err);
+        }
 
-      const waitingDocs = querySnap ? querySnap.docs.filter(d => {
-        if (d.id === currentUid || (profile?.id && d.id === profile.id)) return false;
-        const dData = d.data();
-        // Strict wordLength preference check: enforce exact wordLength equality
-        if (dData.wordLength && Number(dData.wordLength) !== targetLen) return false;
-        return true;
-      }) : [];
+        const waitingDocs = querySnap ? querySnap.docs.filter(d => {
+          if (d.id === currentUid || (profile?.id && d.id === profile.id)) return false;
+          const dData = d.data();
+          const docWordLen = Number(dData.wordLength);
+          if (!docWordLen || docWordLen !== targetLen) return false;
+          return true;
+        }) : [];
 
-      if (waitingDocs.length > 0) {
-        const oppDoc = waitingDocs[0];
-        const oppData = oppDoc.data();
-        const oppId = oppData.playerId || oppData.uid || oppData.id || oppDoc.id;
-        const oppName = oppData.name || oppData.username || oppData.displayName || 'Oyuncu';
+        if (waitingDocs.length > 0) {
+          if (matchmakingStatusRef.current !== 'queued' || hasEnteredGameRef.current || activeMatchRef.current) {
+            console.warn("[Firestore Matchmaking] User is no longer queued or already in a match, skipping fallback match creation.");
+            return;
+          }
 
-        const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-        const word = turkishUpper(getRandomWord(targetLen, true));
+          const oppDoc = waitingDocs[0];
+          const oppData = oppDoc.data();
+          const oppId = oppData.playerId || oppData.uid || oppData.id || oppDoc.id;
+          const oppName = oppData.name || oppData.username || oppData.displayName || 'Oyuncu';
 
-        console.log(`[Firestore Matchmaking] Match found in queue (${targetLen} letters)! Opponent: ${oppName}. Creating match ${matchId} with word ${word}`);
+          const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+          const word = turkishUpper(getRandomWord(targetLen, true));
 
-        const matchPayload = {
-          id: matchId,
-          matchId,
-          wordLength: targetLen,
-          targetWord: word,
-          correctWord: word,
-          gameState: 'PLAYING',
-          status: 'playing',
-          createdAt: new Date().toISOString(),
-          player1: { id: oppId, uid: oppId, name: oppName, username: oppName, displayName: oppName, avatarUrl: oppData.avatarUrl || '' },
-          player2: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar },
-          players: {
-            [oppId]: { id: oppId, uid: oppId, name: oppName, username: oppName, displayName: oppName, avatarUrl: oppData.avatarUrl || '', attempts: [], completed: false, won: false },
-            [currentUid]: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar, attempts: [], completed: false, won: false }
-          },
-          isGameOver: false,
-          winner: null
-        };
+          console.log(`[Firestore Fallback Matchmaking] Match found in queue (${targetLen} letters)! Opponent: ${oppName}. Creating match ${matchId} with word ${word}`);
 
-        // Create match documents in Firestore
-        await setDoc(doc(db, 'matches', matchId), matchPayload);
-        await setDoc(doc(db, 'rooms', matchId), matchPayload);
+          const matchPayload = {
+            id: matchId,
+            matchId,
+            wordLength: targetLen,
+            targetWord: word,
+            correctWord: word,
+            gameState: 'PLAYING',
+            status: 'playing',
+            createdAt: new Date().toISOString(),
+            player1: { id: oppId, uid: oppId, name: oppName, username: oppName, displayName: oppName, avatarUrl: oppData.avatarUrl || '' },
+            player2: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar },
+            players: {
+              [oppId]: { id: oppId, uid: oppId, name: oppName, username: oppName, displayName: oppName, avatarUrl: oppData.avatarUrl || '', attempts: [], completed: false, won: false },
+              [currentUid]: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar, attempts: [], completed: false, won: false }
+            },
+            isGameOver: false,
+            winner: null
+          };
 
-        // Notify opponent via their queue document in the same isolated queue collection
-        await setDoc(doc(db, queueCollectionName, oppId), {
-          status: 'matched',
-          matchId,
-          correctWord: word,
-          targetWord: word,
-          wordLength: targetLen,
-          player1: matchPayload.player1,
-          player2: matchPayload.player2,
-          players: matchPayload.players,
-          opponent: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar }
-        }, { merge: true }).catch((err) => {
-          console.warn("[Firestore Matchmaking] Failed updating opponent queue doc:", err);
-        });
+          // Create match documents in Firestore
+          await setDoc(doc(db, 'matches', matchId), matchPayload);
+          await setDoc(doc(db, 'rooms', matchId), matchPayload);
 
-        // Launch match for ourselves
-        setActiveMatch(matchPayload);
-        setTargetWord(word);
-        setWordLength(targetLen);
-        setAttempts([]);
-        setCurrentAttempt('');
-        setLetterStatuses({});
-        setGameStatus('playing');
-        setHasEnteredGame(true);
-        setMatchmakingStatus('idle');
-        setIsMatchmakingLocked(false);
-        showToast('Rakip bulundu! Düello başladı! ⚡', 'success');
+          // Notify opponent via their queue document in the same isolated queue collection
+          await setDoc(doc(db, queueCollectionName, oppId), {
+            status: 'matched',
+            matchId,
+            correctWord: word,
+            targetWord: word,
+            wordLength: targetLen,
+            player1: matchPayload.player1,
+            player2: matchPayload.player2,
+            players: matchPayload.players,
+            opponent: { id: currentUid, uid: currentUid, name: selfName, username: selfName, displayName: selfName, avatarUrl: selfAvatar }
+          }, { merge: true }).catch((err) => {
+            console.warn("[Firestore Matchmaking] Failed updating opponent queue doc:", err);
+          });
 
-        deleteDoc(myQueueRef).catch(() => {});
-        if (queueUnsubscribeRef.current) {
-          queueUnsubscribeRef.current();
-          queueUnsubscribeRef.current = null;
+          // Launch match for ourselves
+          setActiveMatch(matchPayload);
+          setTargetWord(word);
+          setWordLength(targetLen);
+          setAttempts([]);
+          setCurrentAttempt('');
+          setLetterStatuses({});
+          setGameStatus('playing');
+          setHasEnteredGame(true);
+          setMatchmakingStatus('idle');
+          setIsMatchmakingLocked(false);
+          showToast('Rakip bulundu! Düello başladı! ⚡', 'success');
+
+          deleteDoc(myQueueRef).catch(() => {});
+          if (queueUnsubscribeRef.current) {
+            queueUnsubscribeRef.current();
+            queueUnsubscribeRef.current = null;
+          }
         }
       }
     } catch (err) {
@@ -4947,8 +5116,11 @@ export default function App() {
   };
 
   const syncDailyPuzzleProgress = async (updatedAttempts: GameAttempt[], solved: boolean, failed: boolean) => {
+    const todayDateStr = getDailyWordAndLength().dateStr;
+    let syncedViaApi = false;
+
     try {
-      await fetch(getApiUrl('/api/daily-puzzle'), {
+      const response = await fetch(getApiUrl('/api/daily-puzzle'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -4958,8 +5130,29 @@ export default function App() {
           failed
         })
       });
+      if (response.ok) {
+        syncedViaApi = true;
+      }
     } catch (e) {
-      console.error('Error syncing daily puzzle progress:', e);
+      console.warn('Error syncing daily puzzle progress via API, attempting Firestore write:', e);
+    }
+
+    // Direct Firestore client backup write
+    if (!syncedViaApi && deviceId) {
+      try {
+        const docRef = doc(db, 'daily_puzzles', `${todayDateStr}_${deviceId}`);
+        await setDoc(docRef, {
+          dateStr: todayDateStr,
+          deviceId,
+          attempts: updatedAttempts || [],
+          solved: !!solved,
+          failed: !!failed,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        console.log('Daily puzzle progress saved directly to Firestore backup.');
+      } catch (fsErr) {
+        console.error('Error saving daily puzzle to Firestore directly:', fsErr);
+      }
     }
   };
 
@@ -4973,12 +5166,36 @@ export default function App() {
 
     setIsValidating(true);
     try {
-      const response = await fetch(getApiUrl(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`));
-      if (!response.ok) {
-        throw new Error('Could not fetch daily puzzle status');
-      }
-      const data = await response.json();
       const dailyInfo = getDailyWordAndLength();
+      let data: any = null;
+
+      try {
+        const response = await fetch(getApiUrl(`/api/daily-puzzle?deviceId=${encodeURIComponent(deviceId)}`));
+        if (response.ok) {
+          const contentType = response.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            data = await response.json();
+          }
+        }
+      } catch (fetchErr) {
+        console.warn('API fetch for daily puzzle in handleStart failed, attempting direct Firestore fallback:', fetchErr);
+      }
+
+      // Direct Firestore Client Fallback if API was unavailable or non-JSON
+      if (!data) {
+        try {
+          const docRef = doc(db, 'daily_puzzles', `${dailyInfo.dateStr}_${deviceId}`);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            data = docSnap.data();
+          } else {
+            data = { dateStr: dailyInfo.dateStr, attempts: [], solved: false, failed: false };
+          }
+        } catch (fsErr) {
+          console.warn('Firestore fallback fetch in handleStart failed:', fsErr);
+          data = { dateStr: dailyInfo.dateStr, attempts: [], solved: false, failed: false };
+        }
+      }
 
       if (data.solved || data.failed) {
         showToast('Bugünkü hakkınızı doldurdunuz, yeni kelime yarın gelecek!', 'info');
@@ -5049,11 +5266,13 @@ export default function App() {
 
   const handleUpdateProfile = async (name: string, avatarUrl?: string) => {
     const cleanName = name.trim();
+    const finalAvatar = avatarUrl || profile?.avatarUrl;
+
     setProfile(prev => {
       const updated = {
         ...prev,
         name: cleanName,
-        ...(avatarUrl ? { avatarUrl } : {}),
+        ...(finalAvatar ? { avatarUrl: finalAvatar } : {}),
         nameSet: true
       };
       safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updated));
@@ -5063,8 +5282,52 @@ export default function App() {
       });
       return updated;
     });
+
     setNameInput(cleanName);
-    if (avatarUrl) setAvatarInput(avatarUrl);
+    if (finalAvatar) setAvatarInput(finalAvatar);
+
+    // Synchronize active match player states dynamically
+    setActiveMatch(prevMatch => {
+      if (!prevMatch) return prevMatch;
+      const myId = profile?.id;
+      if (!myId) return prevMatch;
+      const isP1 = prevMatch.player1?.id === myId;
+      const isP2 = prevMatch.player2?.id === myId;
+      if (!isP1 && !isP2) return prevMatch;
+
+      return {
+        ...prevMatch,
+        ...(isP1 ? {
+          player1: {
+            ...prevMatch.player1,
+            name: cleanName,
+            ...(finalAvatar ? { avatarUrl: finalAvatar } : {})
+          }
+        } : {}),
+        ...(isP2 ? {
+          player2: {
+            ...prevMatch.player2,
+            name: cleanName,
+            ...(finalAvatar ? { avatarUrl: finalAvatar } : {})
+          }
+        } : {})
+      };
+    });
+
+    // Notify backend/WebSocket if connected
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      try {
+        socketRef.current.send(JSON.stringify({
+          type: 'UPDATE_PROFILE',
+          profile: {
+            id: profile?.id,
+            name: cleanName,
+            avatarUrl: finalAvatar
+          }
+        }));
+      } catch (e) {}
+    }
+
     showToast('Profiliniz güncellendi.', 'success');
   };
 
@@ -5493,7 +5756,11 @@ export default function App() {
                     <div className="flex items-center gap-1.5 min-w-0">
                       <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden">
                         {profile?.avatarUrl ? (
-                          <img src={profile?.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          isImageUrl(profile.avatarUrl) ? (
+                            <img src={profile.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <span className="text-xs select-none">{profile.avatarUrl}</span>
+                          )
                         ) : (
                           profile?.name?.[0]?.toUpperCase() || 'S'
                         )}
@@ -5521,7 +5788,11 @@ export default function App() {
                     <div className="flex items-center gap-1.5 min-w-0">
                       <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-black text-xs text-amber-300 shrink-0 overflow-hidden">
                         {oppPlayer?.avatarUrl ? (
-                          <img src={oppPlayer.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          isImageUrl(oppPlayer.avatarUrl) ? (
+                            <img src={oppPlayer.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <span className="text-xs select-none">{oppPlayer.avatarUrl}</span>
+                          )
                         ) : (
                           oppDisplayName?.[0]?.toUpperCase() || 'R'
                         )}
@@ -5643,7 +5914,7 @@ export default function App() {
             const normAttempt = turkishUpper(currentAttempt.trim());
             const isDup = normAttempt.length === wordLength && attempts.some(a => turkishUpper(a.word.trim()) === normAttempt);
             return (
-              <>
+              <div className="w-full flex flex-col items-center shrink-0 my-0.5 relative">
                 {isDup && (
                   <div className="w-full max-w-xs mx-auto mb-1.5 py-1 px-3 bg-rose-500/20 border border-rose-500/40 rounded-xl flex items-center justify-center gap-1.5 text-rose-300 text-[11px] font-extrabold shadow-lg shadow-rose-500/10 animate-pulse select-none">
                     <AlertCircle size={13} className="text-rose-400 shrink-0" />
@@ -5655,11 +5926,12 @@ export default function App() {
                   currentAttempt={currentAttempt}
                   wordLength={wordLength}
                   boardTheme={settings.boardTheme}
-                  isGameOver={gameStatus !== 'playing'}
+                  isGameOver={gameStatus === 'won' || gameStatus === 'lost' || isMatchEnded}
                   revealedHints={revealedHints}
                   isDuplicateAttempt={isDup}
+                  onTransferRowGreenLetters={handleTransferRowGreenLetters}
                 />
-              </>
+              </div>
             );
           })()}
 
@@ -5822,13 +6094,8 @@ export default function App() {
               currentGuess={currentAttempt}
               wordLength={wordLength}
               isValidating={isValidating}
-              onClear={() => {
-                if (currentAttempt.length > 0) {
-                  setCurrentAttempt('');
-                  playDeleteSound(settings.soundEnabled);
-                }
-              }}
-              onSubmit={submitGuess}
+              onClear={handleClearAttempt}
+              onSubmit={handleSubmitGuess}
               disabled={activeMatch ? (activeMatch.status !== 'playing' && activeMatch.gameState !== 'PLAYING') : gameStatus !== 'playing'}
             />
           )}
@@ -5843,7 +6110,7 @@ export default function App() {
             <Keyboard
               onChar={onChar}
               onDelete={onDelete}
-              onEnter={submitGuess}
+              onEnter={handleSubmitGuess}
               letterStatuses={letterStatuses}
               keyboardLayout={settings.keyboardLayout}
               boardTheme={settings.boardTheme}
@@ -6117,10 +6384,10 @@ export default function App() {
               <div className="relative">
                 {avatarInput ? (
                   <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-emerald-500 bg-white dark:bg-gray-800 flex items-center justify-center shadow-lg">
-                    {avatarInput.length < 4 ? (
-                      <span className="text-4xl select-none">{avatarInput}</span>
-                    ) : (
+                    {isImageUrl(avatarInput) ? (
                       <img src={avatarInput} alt="Avatar önizleme" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <span className="text-4xl select-none">{avatarInput}</span>
                     )}
                   </div>
                 ) : (

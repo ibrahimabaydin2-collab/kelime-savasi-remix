@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Sparkles, Swords, User } from 'lucide-react';
-import { UserProfile } from '../types';
+import { UserProfile, isImageUrl } from '../types';
 import { validateUsername } from '../utils/usernameValidation';
 import { checkUsernameExists } from '../lib/firebase';
 
@@ -193,7 +193,7 @@ export default function FirstTimeSetup({ profile, onComplete }: FirstTimeSetupPr
           </div>
 
           <div className="grid grid-cols-6 gap-2 p-3 bg-black/30 rounded-2xl border border-white/5 max-h-32 overflow-y-auto">
-            {selectedAvatar && selectedAvatar.length >= 4 && (
+            {selectedAvatar && isImageUrl(selectedAvatar) && (
               <button
                 type="button"
                 onClick={() => setSelectedAvatar(selectedAvatar)}

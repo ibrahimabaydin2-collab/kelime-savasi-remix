@@ -7,7 +7,7 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { WebSocketServer, WebSocket } from 'ws';
-import { doc, getDoc, setDoc, runTransaction } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, runTransaction } from 'firebase/firestore';
 import { db } from './src/lib/firebase';
 import { getRandomWord, isWordInCuratedList, getDailyWordAndLength } from './src/data/wordlist';
 import { turkishUpper, turkishLower } from './src/utils/turkish';
@@ -1362,7 +1362,13 @@ async function startServer() {
           const player = { id: playerId, name: playerName, avatarUrl: playerAvatar };
           connectedClients.set(ws, player);
           const rawLength = data.wordLength ?? data.length ?? data.wordsCount ?? data.duelWordLength;
-          const length = Math.max(3, Math.min(10, parseInt(String(rawLength), 10) || 5));
+          const parsedRaw = parseInt(String(rawLength), 10);
+          if (rawLength === undefined || rawLength === null || isNaN(parsedRaw)) {
+            console.warn('[Duel Server] Rejecting join_matchmaking: missing or invalid wordLength in payload:', data);
+            sendWs(ws, { type: 'error', message: 'Harf sayısı zorunlu bir filtredir. Lütfen bir harf sayısı seçin.' });
+            return;
+          }
+          const length = Math.max(3, Math.min(10, parsedRaw));
 
           // Clean up stale, closed sockets or old queue entries across ALL word length queues for this ws/player ID
           removeFromAllMatchmakingQueues(ws, player.id);
@@ -1444,6 +1450,12 @@ async function startServer() {
             setDoc(doc(db, 'rooms', matchId), initialFirestoreMatch, { merge: true }).catch(err => {
               console.error('[Duel Server] Failed to save room to Firestore:', err);
             });
+
+            // Clean up both players from Firestore queue to prevent client-side dual match creation race conditions
+            deleteDoc(doc(db, `matchmaking_queue_${length}`, matchObj.player1.id)).catch(() => {});
+            deleteDoc(doc(db, `matchmaking_queue_${length}`, matchObj.player2.id)).catch(() => {});
+            deleteDoc(doc(db, 'matchmaking_queue', matchObj.player1.id)).catch(() => {});
+            deleteDoc(doc(db, 'matchmaking_queue', matchObj.player2.id)).catch(() => {});
 
             // State 1: WAITING
             const waitingPayload = {

@@ -6,7 +6,7 @@ import {
   Sun, Moon, Sliders, BarChart2, X, ArrowLeft, UserPlus, UserMinus, Clock, Puzzle,
   Bot
 } from 'lucide-react';
-import { UserProfile } from '../types';
+import { UserProfile, isImageUrl } from '../types';
 import { getBaseUrl } from '../utils/api';
 import { validateUsername } from '../utils/usernameValidation';
 import { getDailyWordAndLength } from '../data/wordlist';
@@ -498,15 +498,15 @@ export default function WelcomeScreen({
   const error = (isTouched || editName !== profile?.name ? validateUsername(editName, [], profile?.id || '') : null) || dbUsernameError;
 
   React.useEffect(() => {
-    if (!isEditing && profile) {
-      if (profile.name && profile.name !== editName) {
+    if (profile) {
+      if (profile.name) {
         setEditName(profile.name);
       }
-      if (profile.avatarUrl && profile.avatarUrl !== selectedAvatar) {
+      if (profile.avatarUrl) {
         setSelectedAvatar(profile.avatarUrl);
       }
     }
-  }, [profile?.name, profile?.avatarUrl, isEditing]);
+  }, [profile?.name, profile?.avatarUrl]);
 
   const AVATAR_PRESETS = ['⚔️', '🧠', '🐺', '🦁', '🧙‍♂️', '🦊', '👾', '🦄', '⚡', '👑', '🎯', '🚀', '🔥', '🐉', '🐼', '🛡️', '🏆', '🦉'];
 
@@ -1006,7 +1006,7 @@ export default function WelcomeScreen({
         </div>
 
         <div className="grid grid-cols-6 gap-2 p-2.5 bg-black/30 rounded-2xl border border-white/5 max-h-32 overflow-y-auto">
-          {selectedAvatar && selectedAvatar.length >= 4 && (
+          {selectedAvatar && isImageUrl(selectedAvatar) && (
             <button
               type="button"
               onClick={() => setSelectedAvatar(selectedAvatar)}
@@ -1160,10 +1160,10 @@ export default function WelcomeScreen({
                   className="relative w-16 h-16 rounded-full bg-[#1A212D] border-2 border-amber-500/50 flex items-center justify-center overflow-hidden shrink-0 transition-transform duration-300 hover:scale-105 cursor-pointer"
                   onClick={() => setIsEditing(true)}
                 >
-                  {profile?.avatarUrl && profile.avatarUrl.length > 3 ? (
+                  {profile?.avatarUrl && isImageUrl(profile.avatarUrl) ? (
                      <img src={profile.avatarUrl} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                   ) : (
-                     <span className="text-3xl select-none">🧠</span>
+                     <span className="text-3xl select-none">{profile?.avatarUrl || '🧠'}</span>
                   )}
                 </div>
 

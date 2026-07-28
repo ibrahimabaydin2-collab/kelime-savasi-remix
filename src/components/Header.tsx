@@ -1,5 +1,6 @@
 // Complete rebuild stamp: 2026-07-23 v1.0.2
 import { Sun, Moon, BarChart2, Award, Users, RefreshCw, Sliders, Target } from 'lucide-react';
+import { isImageUrl } from '../types';
 
 interface HeaderProps {
   darkMode: boolean;
@@ -67,10 +68,10 @@ export default function Header({
           >
             {avatarUrl ? (
               <span className="w-6 h-6 rounded-full overflow-hidden border border-emerald-500 flex items-center justify-center bg-[#2E3748] font-bold shrink-0">
-                {avatarUrl.length < 4 ? (
-                  <span className="text-sm leading-none">{avatarUrl}</span>
-                ) : (
+                {isImageUrl(avatarUrl) ? (
                   <img src={avatarUrl} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <span className="text-sm leading-none">{avatarUrl}</span>
                 )}
               </span>
             ) : (

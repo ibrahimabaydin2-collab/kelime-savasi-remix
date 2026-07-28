@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Sliders, 
@@ -24,7 +24,7 @@ import {
   LogOut,
   Zap
 } from 'lucide-react';
-import { UserProfile, NetworkLogEntry } from '../types';
+import { UserProfile, NetworkLogEntry, isImageUrl } from '../types';
 import { validateUsername, validatePassword } from '../utils/usernameValidation';
 import PrivacyPolicyModal from './PrivacyPolicyModal';
 import { 
@@ -85,6 +85,16 @@ export default function SettingsModal({
   const [isPrivacyOpen, setIsPrivacyOpen] = useState<boolean>(false);
   const [editName, setEditName] = useState<string>(profile?.name || '');
   const [selectedAvatar, setSelectedAvatar] = useState<string>(profile?.avatarUrl || '🧠');
+
+  // Keep local fields dynamically synchronized with central profile state
+  useEffect(() => {
+    if (profile?.avatarUrl) {
+      setSelectedAvatar(profile.avatarUrl);
+    }
+    if (profile?.name) {
+      setEditName(profile.name);
+    }
+  }, [profile?.avatarUrl, profile?.name]);
   const [showAvatarPresets, setShowAvatarPresets] = useState<boolean>(false);
   const [isTouched, setIsTouched] = useState<boolean>(false);
   const [dbUsernameError, setDbUsernameError] = useState<string | null>(null);
@@ -359,7 +369,7 @@ export default function SettingsModal({
             ctx.drawImage(img, 0, 0, width, height);
             const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
             setSelectedAvatar(dataUrl);
-            onUpdateProfile(editName.trim(), dataUrl);
+            onUpdateProfile(editName.trim() || profile?.name || 'Oyuncu', dataUrl);
           }
         };
         img.src = reader.result as string;
@@ -482,10 +492,10 @@ export default function SettingsModal({
                       onClick={() => setShowAvatarPresets(!showAvatarPresets)}
                       className="w-16 h-16 rounded-full bg-[#1E2640] border-2 border-amber-200/60 shadow-[0_0_15px_rgba(251,191,36,0.15)] flex items-center justify-center text-3xl overflow-hidden transition-transform duration-200 hover:scale-105 cursor-pointer"
                     >
-                      {selectedAvatar && selectedAvatar.length > 3 ? (
+                      {selectedAvatar && isImageUrl(selectedAvatar) ? (
                         <img src={selectedAvatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       ) : (
-                        <span className="select-none">{selectedAvatar}</span>
+                        <span className="select-none">{selectedAvatar || '🧠'}</span>
                       )}
                     </div>
                     <input
@@ -561,7 +571,7 @@ export default function SettingsModal({
                           type="button"
                           onClick={() => {
                             setSelectedAvatar(preset);
-                            onUpdateProfile(editName.trim(), preset);
+                            onUpdateProfile(editName.trim() || profile?.name || 'Oyuncu', preset);
                           }}
                           className={`w-8 h-8 rounded-lg flex items-center justify-center text-lg transition duration-150 active:scale-90 hover:bg-white/10 ${
                             selectedAvatar === preset 
@@ -930,6 +940,14 @@ export default function SettingsModal({
                                     setSecuritySuccess('Hesabınız başarıyla Google ile eşleştirilmiştir! 🎉');
                                     setSelectedLinkMethod('none');
                                   } catch (err: any) {
+                                    if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') {
+                                      setSecurityError('Giriş penceresi kapatıldı.');
+                                      return;
+                                    }
+                                    if (err?.code === 'auth/popup-blocked') {
+                                      setSecurityError('Açılır pencere engelleyici tarafından engellendi.');
+                                      return;
+                                    }
                                     console.error('Google link error:', err);
                                     let msg = err.message || 'Google ile bağlanma başarısız oldu.';
                                     if (err.code === 'auth/credential-already-in-use') {

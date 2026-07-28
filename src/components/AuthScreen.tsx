@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Sparkles, Swords, User, Mail, Lock, ShieldAlert, LogIn, AlertCircle, Smartphone, ArrowLeft } from 'lucide-react';
-import { UserProfile } from '../types';
+import { UserProfile, isImageUrl } from '../types';
 import { validateUsername, validatePassword } from '../utils/usernameValidation';
 import PrivacyPolicyModal from './PrivacyPolicyModal';
 import { 
@@ -250,6 +250,14 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
         }
       }
     } catch (err: any) {
+      if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') {
+        setFirebaseError('Giriş penceresi kapatıldı.');
+        return;
+      }
+      if (err?.code === 'auth/popup-blocked') {
+        setFirebaseError('Açılır pencere engelleyici tarafından engellendi.');
+        return;
+      }
       console.error('Google login error:', err);
       setFirebaseError('Giriş yapılamadı, lütfen tekrar deneyin.');
     } finally {
@@ -844,7 +852,7 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
 
                   <div className="flex gap-4 items-center bg-[#232B39]/50 p-3 rounded-2xl border border-white/5">
                     <div className="w-14 h-14 rounded-full bg-[#3D4756] border-2 border-amber-200/60 shadow-[0_0_15px_rgba(251,191,36,0.25)] flex items-center justify-center text-2xl overflow-hidden shrink-0">
-                      {selectedAvatar && selectedAvatar.length > 3 ? (
+                      {selectedAvatar && isImageUrl(selectedAvatar) ? (
                         <img src={selectedAvatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       ) : (
                         <span className="select-none">{selectedAvatar}</span>
@@ -1078,7 +1086,7 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
                 <div className="flex gap-4 items-center bg-[#232B39]/50 p-3 rounded-2xl border border-white/5">
                   {/* Preview */}
                   <div className="w-14 h-14 rounded-full bg-[#3D4756] border-2 border-amber-200/60 shadow-[0_0_15px_rgba(251,191,36,0.25)] flex items-center justify-center text-2xl overflow-hidden shrink-0">
-                    {selectedAvatar && selectedAvatar.length > 3 ? (
+                    {selectedAvatar && isImageUrl(selectedAvatar) ? (
                       <img src={selectedAvatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
                       <span className="select-none">{selectedAvatar}</span>

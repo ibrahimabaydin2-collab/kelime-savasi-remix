@@ -139,6 +139,15 @@ export function getBaseUrl(): string {
       const protocol = window.location.protocol || '';
       const hostname = window.location.hostname || '';
       
+      const isCloudRun = hostname.includes('run.app') || 
+                         hostname === 'localhost' || 
+                         hostname === '127.0.0.1';
+
+      // 1. Browser dev/Cloud Run environment (where we serve locally and need local relative endpoint)
+      if (isCloudRun) {
+        return window.location.origin;
+      }
+
       const isHybrid = protocol === 'file:' || 
                        protocol.startsWith('capacitor') || 
                        protocol.startsWith('ionic') || 
@@ -146,7 +155,7 @@ export function getBaseUrl(): string {
                        isCapacitor ||
                        isMobile;
 
-      // 1. Standalone hybrid apps (like Capacitor APK, Android WebView, mobile etc)
+      // 2. Standalone hybrid apps (like Capacitor APK, Android WebView, mobile native app)
       // must always default to the remote production backend (unless explicitly configured to dev/custom)
       if (isHybrid) {
         const type = window.localStorage.getItem('kelimesavasi_server_type');
@@ -157,15 +166,6 @@ export function getBaseUrl(): string {
           if (customUrl) return customUrl;
         }
         return DEPLOYED_APP_URL;
-      }
-
-      // 2. Browser dev environment (where we serve locally and need local relative endpoint, e.g. local browser at localhost:3000)
-      const isDevEnv = hostname.includes('run.app') || 
-                       hostname === 'localhost' || 
-                       hostname === '127.0.0.1';
-      
-      if (isDevEnv) {
-        return window.location.origin;
       }
 
       const type = window.localStorage.getItem('kelimesavasi_server_type');
