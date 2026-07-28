@@ -354,8 +354,22 @@ const getPlayerAttemptData = (
   profileId: string = '',
   localAttempts: any[] = []
 ) => {
-  let attemptsArray: any[] = isSelf ? [...localAttempts] : [];
-  let maxCount = isSelf ? localAttempts.length : 0;
+  const isMatchInPrep = match && (
+    match.gameState === 'READY' ||
+    match.gameState === 'WAITING' ||
+    match.status === 'waiting_ready' ||
+    match.status === 'waiting'
+  );
+
+  const matchLen = Number(match?.wordLength) || 0;
+  const filteredLocalAttempts = (isMatchInPrep ? [] : localAttempts).filter((a: any) => {
+    if (!a || !a.word) return false;
+    if (matchLen > 0 && String(a.word).trim().length !== matchLen) return false;
+    return true;
+  });
+
+  let attemptsArray: any[] = isSelf ? [...filteredLocalAttempts] : [];
+  let maxCount = isSelf ? filteredLocalAttempts.length : 0;
   let isWon = false;
   let isCompleted = false;
 
@@ -1059,7 +1073,7 @@ export default function App() {
 
   const handleGetWordSuggestion = async () => {
     if (gameStatus !== 'playing') return;
-    if (profile.gold < 1) {
+    if (profile.gold < 2) {
       showToast("Yetersiz Altın! Reklam izleyerek altın kazanabilirsiniz.", "error");
       return;
     }
@@ -1067,7 +1081,7 @@ export default function App() {
     await new Promise(resolve => setTimeout(resolve, 10));
     const suggestion = generateWordSuggestion();
     if (suggestion) {
-      const success = await deductGold(1);
+      const success = await deductGold(2);
       if (success) {
         setCurrentAttempt(suggestion.toUpperCase());
         showToast(`Tavsiye Kelime Yazıldı: ${suggestion.toUpperCase()} 💡`, "success");
@@ -1080,7 +1094,7 @@ export default function App() {
 
   const handleGetHint = async () => {
     if (gameStatus !== 'playing') return;
-    if (profile.gold < 1) {
+    if (profile.gold < 2) {
       showToast("Yetersiz Altın! Reklam izleyerek altın kazanabilirsiniz.", "error");
       return;
     }
@@ -1101,7 +1115,7 @@ export default function App() {
 
     if (unrevealedIndices.length > 0) {
       // Whisper a correct letter
-      const success = await deductGold(1);
+      const success = await deductGold(2);
       if (success) {
         const randomIdx = unrevealedIndices[Math.floor(Math.random() * unrevealedIndices.length)];
         const charToReveal = targetWordUpper[randomIdx];
@@ -1124,7 +1138,7 @@ export default function App() {
     });
 
     if (unusedAlphabetKeys.length > 0) {
-      const success = await deductGold(1);
+      const success = await deductGold(2);
       if (success) {
         const randomKey = unusedAlphabetKeys[Math.floor(Math.random() * unusedAlphabetKeys.length)];
         setLetterStatuses(prev => ({ ...prev, [randomKey]: 'grey' }));
@@ -1536,12 +1550,19 @@ export default function App() {
 
     const handleUnload = () => {
       updateUserPresence(profile.id, false);
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        try {
+          socketRef.current.send(JSON.stringify({ type: 'leave_match' }));
+        } catch (e) {}
+      }
     };
     window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
 
     return () => {
       clearInterval(interval);
       window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('pagehide', handleUnload);
     };
   }, [profile?.id]);
 
@@ -2016,6 +2037,11 @@ export default function App() {
               setMatchmakingStatus('queued');
               showToast('Eşleşme sırasına alındınız. Rakip aranıyor...', 'info');
             } else if (data.type === 'match_joined') {
+              const incomingLen = Number(data.wordLength);
+              if (matchmakingStatusRef.current === 'queued' && incomingLen && duelWordLengthRef.current && incomingLen !== duelWordLengthRef.current) {
+                console.warn(`[Matchmaking Length Guard] Rejecting match_joined: Queued for ${duelWordLengthRef.current}, received ${incomingLen}`);
+                return;
+              }
               setMatchmakingStatus('idle');
               setIsMatchmakingLocked(false);
               
@@ -2049,10 +2075,14 @@ export default function App() {
               setDuelWordLength(matchLen);
               duelWordLengthRef.current = matchLen;
             } else if (data.type === 'match_ready') {
-              if (queueUnsubscribeRef.current) {
-                try { queueUnsubscribeRef.current(); } catch (e) {}
-                queueUnsubscribeRef.current = null;
+              const incomingLen = Number(data.wordLength);
+              if (matchmakingStatusRef.current === 'queued' && incomingLen && duelWordLengthRef.current && incomingLen !== duelWordLengthRef.current) {
+                console.warn(`[Matchmaking Length Guard] Rejecting match_ready: Queued for ${duelWordLengthRef.current}, received ${incomingLen}`);
+                return;
               }
+
+              completelyResetMatchState();
+
               const currentUidClean = auth.currentUser?.uid || profile?.id;
               if (currentUidClean) {
                 deleteDoc(doc(db, 'matchmaking_queue', currentUidClean)).catch(() => {});
@@ -2060,78 +2090,72 @@ export default function App() {
               }
 
               const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
-
               const target = turkishUpper(data.targetWord || data.correctWord || '');
               const matchLen = Number(data.wordLength) || target.length || 5;
-              if (target) setTargetWord(target);
+
+              setTargetWord(target);
               setWordLength(matchLen);
               setDuelWordLength(matchLen);
               duelWordLengthRef.current = matchLen;
-              isMatchEndedRef.current = false;
-              if (data.matchId) handledMatchEndIdsRef.current.delete(data.matchId);
-              setRematchRequested(false);
-              setOpponentRematchRequested(false);
 
               const cleanPlayers = { ...parsedPlayers };
               Object.keys(cleanPlayers).forEach(k => {
                 cleanPlayers[k] = { ...cleanPlayers[k], attempts: [], completed: false, won: false, isWinner: false };
               });
 
-              setActiveMatch((prev: any) => {
-                const isSameMatch = prev && (prev.id === data.matchId || prev.matchId === data.matchId);
-                const base = isSameMatch ? prev : {};
-                return {
-                  ...base,
-                  id: data.matchId,
-                  matchId: data.matchId,
-                  gameState: 'READY',
-                  status: 'waiting_ready',
-                  isGameOver: false,
-                  gameOver: false,
-                  winner: null,
-                  winnerId: null,
-                  winnerUserId: null,
-                  winReason: null,
-                  ...(target ? { targetWord: target, correctWord: target } : {}),
-                  player1: p1,
-                  player2: p2,
-                  players: cleanPlayers,
-                  wordLength: matchLen
-                };
-              });
-              showToast('Rakip bağlandı! Oyun hazırlanıyor... ⚔️', 'info');
-            } else if (data.type === 'match_start') {
-              console.log('[WebSocket Manager] Match START:', data);
-              if (queueUnsubscribeRef.current) {
-                try { queueUnsubscribeRef.current(); } catch (e) {}
-                queueUnsubscribeRef.current = null;
-              }
-              const currentUidClean = auth.currentUser?.uid || profile?.id;
-              if (currentUidClean) {
-                deleteDoc(doc(db, 'matchmaking_queue', currentUidClean)).catch(() => {});
-                deleteDoc(doc(db, `matchmaking_queue_${data.wordLength || 5}`, currentUidClean)).catch(() => {});
-              }
-              const target = turkishUpper(data.targetWord || data.correctWord || '');
-              const matchLen = Number(data.wordLength) || target.length || 5;
-              if (target) {
-                setTargetWord(target);
-              }
-              setWordLength(matchLen);
-              setDuelWordLength(matchLen);
-              duelWordLengthRef.current = matchLen;
-              setAttempts([]);
-              setCurrentAttempt('');
-              setLetterStatuses({});
+              const cleanMatchObj = {
+                id: data.matchId,
+                matchId: data.matchId,
+                gameState: 'READY',
+                status: 'waiting_ready',
+                isGameOver: false,
+                gameOver: false,
+                winner: null,
+                winnerId: null,
+                winnerUserId: null,
+                winReason: null,
+                targetWord: target,
+                correctWord: target,
+                player1: p1,
+                player2: p2,
+                players: cleanPlayers,
+                wordLength: matchLen,
+                scores: {
+                  [p1?.id || 'p1']: 0,
+                  [p2?.id || 'p2']: 0
+                },
+                createdAt: new Date().toISOString()
+              };
+
+              setActiveMatch(cleanMatchObj);
+              activeMatchRef.current = cleanMatchObj;
               setGameStatus('playing');
               setHasEnteredGame(true);
-              setMatchmakingStatus('idle');
-              setIsMatchmakingLocked(false);
-              setOpponentLeftDuringMatch(false);
-              setRematchRequested(false);
-              setOpponentRematchRequested(false);
-              setShowCongratsModal(false);
-              isMatchEndedRef.current = false;
-              if (data.matchId) handledMatchEndIdsRef.current.delete(data.matchId);
+
+              showToast('Rakip bağlandı! Oyun hazırlanıyor... ⚔️', 'info');
+            } else if (data.type === 'match_start') {
+              const incomingLen = Number(data.wordLength);
+              if (matchmakingStatusRef.current === 'queued' && incomingLen && duelWordLengthRef.current && incomingLen !== duelWordLengthRef.current) {
+                console.warn(`[Matchmaking Length Guard] Rejecting match_start: Queued for ${duelWordLengthRef.current}, received ${incomingLen}`);
+                return;
+              }
+              console.log('[WebSocket Manager] Match START:', data);
+
+              completelyResetMatchState();
+
+              const currentUidClean = auth.currentUser?.uid || profile?.id;
+              if (currentUidClean) {
+                deleteDoc(doc(db, 'matchmaking_queue', currentUidClean)).catch(() => {});
+                deleteDoc(doc(db, `matchmaking_queue_${data.wordLength || 5}`, currentUidClean)).catch(() => {});
+              }
+
+              const target = turkishUpper(data.targetWord || data.correctWord || '');
+              const matchLen = Number(data.wordLength) || target.length || 5;
+
+              setTargetWord(target);
+              setWordLength(matchLen);
+              setDuelWordLength(matchLen);
+              duelWordLengthRef.current = matchLen;
 
               const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
@@ -2140,29 +2164,34 @@ export default function App() {
                 cleanPlayers[k] = { ...cleanPlayers[k], attempts: [], completed: false, won: false, isWinner: false };
               });
 
-              setActiveMatch((prev: any) => {
-                const isSameMatch = prev && (prev.id === data.matchId || prev.matchId === data.matchId);
-                const base = isSameMatch ? prev : {};
-                return {
-                  ...base,
-                  id: data.matchId,
-                  matchId: data.matchId,
-                  gameState: 'PLAYING',
-                  status: 'playing',
-                  isGameOver: false,
-                  gameOver: false,
-                  winner: null,
-                  winnerId: null,
-                  winnerUserId: null,
-                  winReason: null,
-                  targetWord: target || base?.targetWord || base?.correctWord || '',
-                  correctWord: target || base?.targetWord || base?.correctWord || '',
-                  player1: p1,
-                  player2: p2,
-                  players: cleanPlayers,
-                  wordLength: matchLen
-                };
-              });
+              const cleanMatchObj = {
+                id: data.matchId,
+                matchId: data.matchId,
+                gameState: 'PLAYING',
+                status: 'playing',
+                isGameOver: false,
+                gameOver: false,
+                winner: null,
+                winnerId: null,
+                winnerUserId: null,
+                winReason: null,
+                targetWord: target,
+                correctWord: target,
+                player1: p1,
+                player2: p2,
+                players: cleanPlayers,
+                wordLength: matchLen,
+                scores: {
+                  [p1?.id || 'p1']: 0,
+                  [p2?.id || 'p2']: 0
+                },
+                createdAt: new Date().toISOString()
+              };
+
+              setActiveMatch(cleanMatchObj);
+              activeMatchRef.current = cleanMatchObj;
+              setGameStatus('playing');
+              setHasEnteredGame(true);
 
               playEnterSound(settings.soundEnabled);
               showToast('Düello başladı! Aynı kelimeyi ilk bulan kazanır! ⚡', 'success');
@@ -2525,6 +2554,38 @@ export default function App() {
       showToast('Çıkış yapılırken bir hata oluştu.', 'error');
     }
   };
+
+  // Completely reset all match state, timers, listeners, and memory variables for clean restart
+  const completelyResetMatchState = useCallback(() => {
+    if (matchUnsubscribeRef.current) {
+      try { matchUnsubscribeRef.current(); } catch (e) {}
+      matchUnsubscribeRef.current = null;
+    }
+    if (queueUnsubscribeRef.current) {
+      try { queueUnsubscribeRef.current(); } catch (e) {}
+      queueUnsubscribeRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    isMatchEndedRef.current = false;
+    handledMatchEndIdsRef.current.clear();
+
+    setAttempts([]);
+    setCurrentAttempt('');
+    setLetterStatuses({});
+    setIsValidating(false);
+    setOpponentLeftDuringMatch(false);
+    setShowCongratsModal(false);
+    setRematchRequested(false);
+    setOpponentRematchRequested(false);
+    setMatchmakingStatus('idle');
+    setIsMatchmakingLocked(false);
+    setActiveMatch(null);
+    activeMatchRef.current = null;
+  }, []);
 
   // Synchronously launch the active 1v1 match after ready check / countdown
   const handleStartMatchedGame = useCallback(() => {
@@ -3088,9 +3149,22 @@ export default function App() {
     if (!matchData) return false;
     if (!hasEnteredGameRef.current || !activeMatchRef.current) return false;
 
-    const matchIdKey = matchData.id || matchData.matchId || activeMatchRef.current?.id || activeMatchRef.current?.matchId;
+    const matchIdKey = matchData.id || matchData.matchId;
+    const activeId = activeMatchRef.current?.id || activeMatchRef.current?.matchId;
+
+    if (matchIdKey && activeId && matchIdKey !== activeId) {
+      console.warn(`[checkAndTriggerMatchEnd] Discarded matchData for old match ${matchIdKey} (active: ${activeId})`);
+      return false;
+    }
+
     if (matchIdKey && handledMatchEndIdsRef.current.has(matchIdKey)) {
       return true; // Match end was already processed for this match
+    }
+
+    const currentGameState = matchData.gameState || activeMatchRef.current?.gameState;
+    const currentStatus = matchData.status || activeMatchRef.current?.status;
+    if (currentGameState === 'READY' || currentGameState === 'WAITING' || currentStatus === 'waiting_ready' || currentStatus === 'waiting') {
+      return false;
     }
 
     let serverWinnerUserId = String(
@@ -3103,6 +3177,20 @@ export default function App() {
           serverWinnerUserId = pId;
         }
       });
+    }
+
+    const allPlayersCompleted = Boolean(
+      matchData.players &&
+      Object.keys(matchData.players).length >= 2 &&
+      Object.values(matchData.players).every((p: any) => {
+        const pAttempts = p?.attempts || [];
+        const pCount = p?.attemptsCount || p?.currentAttemptCount || (Array.isArray(pAttempts) ? pAttempts.length : 0);
+        return p?.completed === true || p?.status === 'lost' || p?.status === 'won' || pCount >= 6;
+      })
+    );
+
+    if (!serverWinnerUserId && allPlayersCompleted) {
+      serverWinnerUserId = 'draw';
     }
 
     if (!serverWinnerUserId && matchData.winReason === 'opponent_left') {
@@ -3125,7 +3213,8 @@ export default function App() {
       matchData.gameState === 'finished' ||
       matchData.gameState === 'FINISHED' ||
       matchData.gameState === 'RESULT' ||
-      serverWinnerUserId !== '';
+      serverWinnerUserId !== '' ||
+      allPlayersCompleted;
 
     if (isFinished) {
       if (matchData.winReason === 'opponent_left') {
@@ -3144,6 +3233,15 @@ export default function App() {
     const matchId = activeMatch?.matchId || activeMatch?.id;
     if (!matchId) return;
 
+    if (
+      isMatchEndedRef.current ||
+      activeMatch?.status === 'finished' ||
+      activeMatch?.status === 'ended' ||
+      activeMatch?.gameState === 'FINISHED'
+    ) {
+      return;
+    }
+
     if (matchUnsubscribeRef.current) {
       matchUnsubscribeRef.current();
       matchUnsubscribeRef.current = null;
@@ -3158,8 +3256,13 @@ export default function App() {
       if (!data) return;
       if (!activeMatchRef.current) return;
 
+      const currentActiveId = activeMatchRef.current.matchId || activeMatchRef.current.id;
+      const snapshotMatchId = data.matchId || data.id || matchId;
+      if (currentActiveId && snapshotMatchId && currentActiveId !== snapshotMatchId) {
+        return;
+      }
+
       setActiveMatch((prev: any) => {
-        const snapshotMatchId = data.matchId || data.id || matchId;
         const isSameMatch = prev && (prev.id === snapshotMatchId || prev.matchId === snapshotMatchId);
 
         const base = isSameMatch ? prev : {
@@ -3942,14 +4045,23 @@ export default function App() {
             }));
           }
 
+          handleGameWin(updatedAttempts.length, scoreAwarded);
           handleInstantMatchEndRef.current(currentAuthUid, winMatchData);
         } else if (updatedAttempts.length >= 6) {
           const currentAuthUid = auth.currentUser?.uid || profile.id;
           const matchId = activeMatch.matchId || activeMatch.id;
           const oppEntry = Object.values(activeMatch.players || {}).find((p: any) => p && p.id !== currentAuthUid) as any;
           const oppId = oppEntry?.id || 'opponent';
-          const oppCompleted = activeMatch.players?.[oppId]?.completed;
-          const oppWon = activeMatch.players?.[oppId]?.won;
+          const oppData = activeMatch.players?.[oppId] || {};
+          const oppAttempts = oppData.attempts || (activeMatch.attempts ? activeMatch.attempts[oppId] : []);
+          const oppCount = oppData.attemptsCount || oppData.currentAttemptCount || (Array.isArray(oppAttempts) ? oppAttempts.length : 0);
+          const oppCompleted = Boolean(
+            oppData.completed ||
+            oppData.status === 'lost' ||
+            oppData.status === 'won' ||
+            oppCount >= 6
+          );
+          const oppWon = Boolean(oppData.won || oppData.status === 'won');
 
           if (timerRef.current) {
             clearInterval(timerRef.current);
@@ -3988,11 +4100,28 @@ export default function App() {
               winnerId: 'draw',
               winnerUserId: 'draw',
               winReason: 'max_attempts',
-              correctWord: targetWord
+              correctWord: targetWord,
+              targetWord: targetWord
             };
             if (matchId) {
               setDoc(doc(db, 'matches', matchId), finishData, { merge: true }).catch(() => {});
               setDoc(doc(db, 'rooms', matchId), finishData, { merge: true }).catch(() => {});
+            }
+            if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+              try {
+                socketRef.current.send(JSON.stringify({
+                  type: 'submit_guess',
+                  matchId: matchId,
+                  word: currentAttempt,
+                  guess: currentAttempt,
+                  playerId: currentAuthUid,
+                  attempts: updatedAttempts,
+                  won: false,
+                  completed: true
+                }));
+              } catch (e) {
+                console.warn('Error sending draw submit_guess to ws:', e);
+              }
             }
             handleInstantMatchEndRef.current('draw', finishData);
           } else {
@@ -4684,6 +4813,8 @@ export default function App() {
 
   const handleAcceptChallenge = async (challengeId: string, challengeObj?: any) => {
     try {
+      completelyResetMatchState();
+
       const targetData = challengeObj || activeChallenges.find(c => c.id === challengeId);
       const targetLength = Number(targetData?.wordLength || duelWordLength || 5);
 
@@ -4714,7 +4845,11 @@ export default function App() {
           [currentUid]: { id: currentUid, name: currentName, avatarUrl: currentAvatar, attempts: [], completed: false, won: false }
         },
         isGameOver: false,
-        winner: null
+        winner: null,
+        scores: {
+          [challengerId]: 0,
+          [currentUid]: 0
+        }
       };
 
       // 1. Create match documents in Firestore first
@@ -4746,21 +4881,10 @@ export default function App() {
 
       setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
 
-      isMatchEndedRef.current = false;
-      if (matchId) handledMatchEndIdsRef.current.delete(matchId);
-
       setTargetWord(correctWord);
       setWordLength(targetLength);
-      setAttempts([]);
-      setCurrentAttempt('');
-      setLetterStatuses({});
-      setHasEnteredGame(true);
-      setMatchmakingStatus('idle');
-      setIsMatchmakingLocked(false);
-      setOpponentLeftDuringMatch(false);
-      setShowCongratsModal(false);
-      setRematchRequested(false);
-      setOpponentRematchRequested(false);
+      setDuelWordLength(targetLength);
+      duelWordLengthRef.current = targetLength;
 
       const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(
         initialFirestoreMatch.player1,
@@ -4774,7 +4898,7 @@ export default function App() {
         cleanPlayers[k] = { ...cleanPlayers[k], attempts: [], completed: false, won: false, isWinner: false };
       });
 
-      setActiveMatch({
+      const cleanMatchObj = {
         ...initialFirestoreMatch,
         isGameOver: false,
         gameOver: false,
@@ -4785,7 +4909,12 @@ export default function App() {
         player1: p1,
         player2: p2,
         players: cleanPlayers
-      });
+      };
+
+      setActiveMatch(cleanMatchObj);
+      activeMatchRef.current = cleanMatchObj;
+      setGameStatus('playing');
+      setHasEnteredGame(true);
 
       showToast('Meydan okuma kabul edildi! Düello hazırlanıyor...', 'success');
     } catch (err) {
@@ -5021,7 +5150,8 @@ export default function App() {
         try {
           const qStrict = query(
             collection(db, queueCollectionName),
-            where('status', '==', 'waiting')
+            where('status', '==', 'waiting'),
+            where('wordLength', '==', targetLen)
           );
           querySnap = await getDocs(qStrict);
         } catch (err) {
@@ -5396,7 +5526,15 @@ export default function App() {
       activeMatch.gameState === 'FINISHED' ||
       activeMatch.gameState === 'finished' ||
       Boolean(activeMatch.winner || activeMatch.winnerId) ||
-      Object.values(activeMatch.players || {}).some((p: any) => p?.won === true || (p?.completed === true && p?.won === true))
+      Object.values(activeMatch.players || {}).some((p: any) => p?.won === true || (p?.completed === true && p?.won === true)) ||
+      (
+        Object.keys(activeMatch.players || {}).length >= 2 &&
+        Object.values(activeMatch.players || {}).every((p: any) => {
+          const pAttempts = p?.attempts || [];
+          const pCount = p?.attemptsCount || p?.currentAttemptCount || (Array.isArray(pAttempts) ? pAttempts.length : 0);
+          return p?.completed === true || p?.status === 'lost' || p?.status === 'won' || pCount >= 6;
+        })
+      )
     )
   );
 
@@ -5548,45 +5686,36 @@ export default function App() {
           />
         ) : (
           <>
-            {/* Back to welcome & Compact control panel block */}
+            {/* Back to welcome & Spaced control panel block for Solo Game */}
             {!activeMatch && (
               <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] flex flex-col gap-2 mb-2 animate-fadeIn">
-                {/* Row 1: Back to entry screen, Pes Et & Yenile */}
-                <div className="flex justify-between items-center w-full">
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => {
-                        if (gameStatus === 'playing' && attempts.length > 0 && !isDailyPuzzle) {
-                          showConfirm(
-                            'Oyundan Çık',
-                            'Mevcut oyundan çıkıp giriş ekranına dönmek istiyor musunuz? İlerlemeniz sıfırlanacaktır.',
-                            () => {
-                              setHasEnteredGame(false);
-                              setIsDailyPuzzle(false);
-                            }
-                          );
-                        } else {
-                          setHasEnteredGame(false);
-                          setIsDailyPuzzle(false);
-                        }
-                      }}
-                      className="flex items-center gap-1 px-3 py-2 text-[11px] font-black uppercase tracking-wider bg-[#FAF6E9] hover:bg-[#F3EFE0] text-[#2E3748] border border-[#EBE6D5] rounded-xl shadow-md transition duration-150 active:scale-[0.97] cursor-pointer"
-                    >
-                      <span>Giriş Ekranı</span>
-                    </button>
+                <div className="flex justify-between items-center w-full px-0.5 py-0.5">
+                  {/* Left: Giriş Ekranı */}
+                  <button
+                    onClick={() => {
+                      if (gameStatus === 'playing' && attempts.length > 0 && !isDailyPuzzle) {
+                        showConfirm(
+                          'Oyundan Çık',
+                          'Mevcut oyundan çıkıp giriş ekranına dönmek istiyor musunuz? İlerlemeniz sıfırlanacaktır.',
+                          () => {
+                            setHasEnteredGame(false);
+                            setIsDailyPuzzle(false);
+                          }
+                        );
+                      } else {
+                        setHasEnteredGame(false);
+                        setIsDailyPuzzle(false);
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 text-[11px] sm:text-xs font-black uppercase tracking-wider bg-[#FAF6E9] hover:bg-[#F3EFE0] text-[#2E3748] border border-[#EBE6D5] rounded-xl shadow-md transition duration-150 active:scale-[0.97] cursor-pointer"
+                  >
+                    <ArrowLeft size={13} className="stroke-[2.5]" />
+                    <span>Giriş Ekranı</span>
+                  </button>
 
-                    <button
-                      onClick={() => setShowFriendsModal(true)}
-                      className="px-2.5 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-amber-300 border border-slate-700 transition duration-150 flex items-center gap-1 text-[11px] font-black uppercase tracking-wider font-mono cursor-pointer shrink-0"
-                      title="Arkadaş Listesini Aç"
-                    >
-                      <Users size={13} className="stroke-[2.5]" />
-                      <span className="hidden xs:inline">Arkadaşlar</span>
-                    </button>
-                  </div>
-
-                  {!isDailyPuzzle && !activeMatch && (
-                    <div className="flex items-center gap-1.5">
+                  {/* Right: Pes Et & Yenile */}
+                  {!isDailyPuzzle && (
+                    <div className="flex items-center gap-2.5 sm:gap-3.5">
                       {gameStatus === 'playing' && (
                         <button
                           onClick={() => {
@@ -5598,11 +5727,11 @@ export default function App() {
                               }
                             );
                           }}
-                          className="px-2.5 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 dark:text-rose-400 border border-rose-500/20 transition duration-150 flex items-center gap-1 text-[11px] font-black uppercase tracking-wider font-mono cursor-pointer shrink-0"
+                          className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-500 dark:text-rose-400 border border-rose-500/30 transition duration-150 flex items-center gap-1.5 text-[11px] sm:text-xs font-black uppercase tracking-wider font-mono cursor-pointer shrink-0 shadow-sm"
                           title="Pes Et ve Kelimeyi Gör"
                         >
-                          <AlertCircle size={12} className="stroke-[2.5]" />
-                          Pes Et
+                          <AlertCircle size={13} className="stroke-[2.5]" />
+                          <span>Pes Et</span>
                         </button>
                       )}
 
@@ -5620,56 +5749,15 @@ export default function App() {
                             startNewGame(wordLength);
                           }
                         }}
-                        className="px-2.5 py-2 rounded-xl bg-[#FAF6E9] hover:bg-[#F3EFE0] text-[#2E3748] border border-[#EBE6D5] font-black transition duration-150 flex items-center gap-1 text-[11px] uppercase tracking-wider font-mono cursor-pointer shrink-0"
+                        className="px-3.5 py-2 rounded-xl bg-[#FAF6E9] hover:bg-[#F3EFE0] text-[#2E3748] border border-[#EBE6D5] font-black transition duration-150 flex items-center gap-1.5 text-[11px] sm:text-xs uppercase tracking-wider font-mono cursor-pointer shrink-0 shadow-md"
                         title="Yeni Kelime Al"
                       >
-                        <RotateCcw size={12} className="stroke-[2.5]" />
-                        Yenile
+                        <RotateCcw size={13} className="stroke-[2.5]" />
+                        <span>Yenile</span>
                       </button>
                     </div>
                   )}
                 </div>
-
-                {/* Row 2: Harf Sayısı Selector & Mode tag */}
-                {!isDailyPuzzle && !activeMatch && (
-                  <div className="flex justify-between items-center w-full bg-[#3D4756]/85 backdrop-blur-md border border-[#3E485A] rounded-xl px-2.5 py-1.5 shadow-sm text-white">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-bold text-gray-300 uppercase tracking-wider font-mono">Harf:</span>
-                      <div className="flex gap-0.5 bg-black/30 p-0.5 rounded-lg">
-                        {[3, 4, 5, 6, 7, 8].map((len) => (
-                          <button
-                            key={len}
-                            onClick={() => {
-                              if (gameStatus === 'playing' && attempts.length > 0) {
-                                showConfirm(
-                                  'Harf Sayısını Değiştir',
-                                  'Mevcut oyunu sıfırlayıp harf sayısını değiştirmek istediğinize emin misiniz?',
-                                  () => {
-                                    setWordLength(len);
-                                  }
-                                );
-                              } else {
-                                setWordLength(len);
-                              }
-                            }}
-                            className={`w-6.5 h-6.5 rounded-md text-[10px] font-black transition-all duration-150 flex items-center justify-center cursor-pointer ${
-                              wordLength === len
-                                ? 'bg-gradient-to-br from-amber-500 to-amber-600 text-slate-950 shadow-xs scale-105'
-                                : 'text-gray-300 hover:bg-white/10 hover:text-white'
-                            }`}
-                          >
-                            {len}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="text-[10px] font-bold text-gray-300 flex items-center gap-1 font-mono uppercase">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
-                      <span>{gameMode === 'timed' ? 'Süreli' : 'Süresiz'}</span>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
 
@@ -5700,34 +5788,29 @@ export default function App() {
             const oppScore = activeMatch.scores?.[oppId] ?? 0;
 
             return (
-              <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto bg-slate-900/95 backdrop-blur-md border border-amber-500/30 rounded-2xl p-2.5 sm:p-3 mb-2.5 shadow-2xl text-white relative overflow-hidden" id="canli-duello-skor-tahtasi">
-                {/* Animated Accent Line */}
-                <div className="absolute top-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500" />
+              <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto bg-slate-900/90 backdrop-blur-xl border border-amber-500/30 rounded-2xl p-2.5 sm:p-3 mb-2.5 shadow-2xl text-white relative overflow-hidden transition-all duration-300" id="canli-duello-skor-tahtasi">
+                {/* Animated Accent Gradient Top Line */}
+                <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500" />
 
-                {/* Top Header Row */}
-                <div className="flex justify-between items-center mb-2 px-0.5 pb-1.5 border-b border-white/10">
-                  <div className="flex items-center gap-1.5 sm:gap-2">
-                    <span className="relative flex h-2.5 w-2.5">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                    </span>
-                    <span className="text-[10px] sm:text-xs font-black font-mono uppercase tracking-wider text-amber-400 flex items-center gap-1">
-                      <Swords size={14} className="text-amber-400 shrink-0 animate-pulse" />
-                      CANLI DÜELLO SKOR TAHTASI
-                    </span>
-                    <span className="text-[9px] font-bold font-mono bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30">
-                      {targetWord?.length || duelWordLength || 5} HARFLİ
-                    </span>
+                {/* Sleek Top Header Row */}
+                <div className="flex justify-between items-center mb-2 px-0.5 pb-2 border-b border-white/10">
+                  <div className="flex items-center gap-2">
+                    <div className="px-2.5 py-1 rounded-full bg-gradient-to-r from-amber-500/20 to-amber-600/10 border border-amber-500/35 flex items-center gap-1.5 shadow-inner">
+                      <Swords size={13} className="text-amber-400 shrink-0 animate-pulse" />
+                      <span className="text-[10px] sm:text-xs font-black font-mono tracking-wider text-amber-300 uppercase">
+                        {targetWord?.length || duelWordLength || 5} HARFLİ DÜELLO
+                      </span>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Minimal, uncluttered connection indicator dot */}
+                    {/* Live connection badge */}
                     <div 
                       onClick={handleManualReconnect}
                       className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold select-none transition-all cursor-pointer ${
                         isOnline 
-                          ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' 
-                          : 'bg-rose-500/20 border border-rose-500/40 text-rose-300 animate-pulse'
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25' 
+                          : 'bg-rose-500/20 border border-rose-500/40 text-rose-300 animate-pulse hover:bg-rose-500/30'
                       }`}
                       title={isOnline ? "Sunucu Bağlantısı Aktif" : "İnternet Kopuk! Yeniden bağlanmak için tıklayın."}
                     >
@@ -5740,7 +5823,7 @@ export default function App() {
 
                     <button
                       onClick={handleLeaveMatch}
-                      className="flex items-center gap-1 text-[10px] font-extrabold bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 px-2.5 py-1 rounded-lg transition active:scale-95 cursor-pointer"
+                      className="flex items-center gap-1 text-[10px] font-extrabold bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/35 px-2.5 py-1 rounded-full transition active:scale-95 cursor-pointer shadow-sm"
                       title="Düellodan Çık"
                     >
                       <LogOut size={12} />
@@ -5750,11 +5833,12 @@ export default function App() {
                 </div>
 
                 {/* Scoreboard Players Grid */}
-                <div className="grid grid-cols-11 items-center gap-1 sm:gap-2">
+                <div className="grid grid-cols-11 items-center gap-1.5 sm:gap-2">
                   {/* Player 1: SEN */}
-                  <div className="col-span-5 bg-black/40 border border-emerald-500/30 rounded-xl p-2 flex items-center justify-between gap-1">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden">
+                  <div className="col-span-5 bg-slate-950/60 border border-emerald-500/30 rounded-xl p-2 flex items-center justify-between gap-1 shadow-sm relative overflow-hidden">
+                    <div className="absolute top-0 left-0 bottom-0 w-1 bg-emerald-500" />
+                    <div className="flex items-center gap-2 min-w-0 pl-1">
+                      <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden shadow-sm">
                         {profile?.avatarUrl ? (
                           isImageUrl(profile.avatarUrl) ? (
                             <img src={profile.avatarUrl} alt="" className="w-full h-full object-cover" />
@@ -5766,27 +5850,28 @@ export default function App() {
                         )}
                       </div>
                       <div className="min-w-0">
-                        <span className="text-[9px] text-emerald-400 font-bold block leading-none font-mono">SEN</span>
+                        <span className="text-[9px] text-emerald-400 font-extrabold block leading-none font-mono tracking-wider">SEN</span>
                         <span className="text-xs font-black text-white truncate block leading-tight">{profile?.name || 'Sen'}</span>
                       </div>
                     </div>
                     <div className="text-right shrink-0">
-                      <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
+                      <span className="text-[8px] text-slate-400 block leading-none font-mono">SKOR</span>
                       <span className="text-xs font-black text-emerald-400 font-mono">{selfScore} P</span>
                     </div>
                   </div>
 
                   {/* Center VS Divider */}
                   <div className="col-span-1 flex flex-col items-center justify-center">
-                    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gradient-to-tr from-amber-500 to-yellow-400 text-slate-950 font-black text-xs font-mono flex items-center justify-center shadow-lg border border-amber-300 animate-pulse">
+                    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gradient-to-tr from-amber-500 via-amber-400 to-yellow-300 text-slate-950 font-black text-xs font-mono flex items-center justify-center shadow-md border border-amber-300/80 tracking-tighter">
                       VS
                     </div>
                   </div>
 
                   {/* Player 2: RAKİP */}
-                  <div className="col-span-5 bg-black/40 border border-amber-500/30 rounded-xl p-2 flex items-center justify-between gap-1">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-black text-xs text-amber-300 shrink-0 overflow-hidden">
+                  <div className="col-span-5 bg-slate-950/60 border border-amber-500/30 rounded-xl p-2 flex items-center justify-between gap-1 shadow-sm relative overflow-hidden">
+                    <div className="absolute top-0 right-0 bottom-0 w-1 bg-amber-500" />
+                    <div className="flex items-center gap-2 min-w-0 pr-1">
+                      <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-black text-xs text-amber-300 shrink-0 overflow-hidden shadow-sm">
                         {oppPlayer?.avatarUrl ? (
                           isImageUrl(oppPlayer.avatarUrl) ? (
                             <img src={oppPlayer.avatarUrl} alt="" className="w-full h-full object-cover" />
@@ -5798,12 +5883,12 @@ export default function App() {
                         )}
                       </div>
                       <div className="min-w-0">
-                        <span className="text-[9px] text-amber-400 font-bold block leading-none font-mono">RAKİP</span>
+                        <span className="text-[9px] text-amber-400 font-extrabold block leading-none font-mono tracking-wider">RAKİP</span>
                         <span className="text-xs font-black text-white truncate block leading-tight">{oppDisplayName}</span>
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
+                    <div className="text-right shrink-0 pr-1">
+                      <span className="text-[8px] text-slate-400 block leading-none font-mono">SKOR</span>
                       <span className="text-xs font-black text-amber-400 font-mono">{oppScore} P</span>
                     </div>
                   </div>
@@ -5846,20 +5931,50 @@ export default function App() {
             </div>
           )}
 
-          {/* Top Timer & Attempts Tracker */}
+          {/* Top Timer & Wallet / Ad Bar */}
           {!isMatchEnded && (
             <div className="w-full flex justify-between items-center mb-2 px-1 border-b border-[#3E485A]/40 pb-2 relative z-10">
               {gameStatus === 'playing' ? (
                 <>
-                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800/80 border border-slate-700 text-left">
-                    <Trophy size={15} className="text-amber-500 shrink-0" />
-                    <span className="text-xs font-bold text-gray-200 font-mono">
-                      Deneme: {attempts.length}/6
-                    </span>
-                  </div>
+                  {activeMatch ? (
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800/80 border border-slate-700 text-left">
+                      <Trophy size={15} className="text-amber-500 shrink-0" />
+                      <span className="text-xs font-bold text-gray-200 font-mono">
+                        Deneme: {attempts.length}/6
+                      </span>
+                    </div>
+                  ) : (
+                    /* In Solo Game mode, show Gold Wallet + Reklam İzle button on the left */
+                    <div className="flex items-center gap-2">
+                      <GoldWallet gold={profile?.gold !== undefined ? profile.gold : 20} />
+                      <button
+                        onClick={async () => {
+                          if (typeof window !== 'undefined' && (window as any).AndroidBridge && (window as any).AndroidBridge.showRewardedAd) {
+                            try {
+                              suspendAudioContext();
+                              document.body.classList.add('ad-active');
+                              (window as any).AndroidBridge.showRewardedAd();
+                            } catch (e) {
+                              await handleWatchRewardedAdReward();
+                            }
+                          } else {
+                            await handleWatchRewardedAdReward();
+                          }
+                        }}
+                        className="flex items-center gap-1.5 bg-gradient-to-r from-amber-400/20 to-yellow-500/20 hover:from-amber-400/30 hover:to-yellow-500/30 active:scale-95 border border-amber-400/40 text-amber-300 px-2.5 py-1 rounded-full transition cursor-pointer shadow-sm text-xs font-bold"
+                        title="Reklam İzleyerek +10 Altın Kazan"
+                        id="top-watch-ad-btn"
+                      >
+                        <span className="text-sm leading-none">📺</span>
+                        <span className="font-mono font-black text-amber-200 text-[11px]">+10 🪙</span>
+                      </button>
+                    </div>
+                  )}
 
-                  {/* Shimmering Gold Wallet in playing screen top bar */}
-                  <GoldWallet gold={profile?.gold !== undefined ? profile.gold : 20} />
+                  {/* In live duels, GoldWallet is placed in middle */}
+                  {activeMatch && (
+                    <GoldWallet gold={profile?.gold !== undefined ? profile.gold : 20} />
+                  )}
 
                   <div className="flex items-center gap-2">
                     {activeMatch ? (
@@ -5879,12 +5994,10 @@ export default function App() {
                         </div>
                       </>
                     ) : (
-                      <>
-                        <Hourglass size={16} className="text-emerald-500 animate-pulse" />
-                        <div className="text-xs font-extrabold font-mono px-2 py-0.5 rounded-lg border bg-black/25 border-[#3E485A] text-emerald-400">
-                          Süresiz ♾️
-                        </div>
-                      </>
+                      <div className="text-xs font-extrabold font-mono px-2.5 py-0.5 rounded-lg border bg-black/25 border-[#3E485A] text-emerald-400 flex items-center gap-1" title="Süresiz Serbest Mod">
+                        <Hourglass size={14} className="text-emerald-400 animate-pulse" />
+                        <span>♾️</span>
+                      </div>
                     )}
                   </div>
                 </>
@@ -5935,20 +6048,20 @@ export default function App() {
             );
           })()}
 
-          {/* 🤫 HINT, SUGGESTION & AD REWARD CONTROLS ROW */}
+          {/* 🤫 HINT & SUGGESTION CONTROLS ROW */}
           {!isMatchEnded && gameStatus === 'playing' && !activeMatch && (
-            <div className="w-full max-w-sm mx-auto flex gap-1.5 justify-center py-1.5 px-1 shrink-0">
+            <div className="w-full max-w-xs mx-auto flex gap-2 justify-center py-1.5 px-1 shrink-0">
               {/* HINT BUTTON */}
               <button
                 onClick={handleGetHint}
                 disabled={attempts.length >= 6}
-                className="flex-1 bg-gradient-to-r from-amber-500/10 to-yellow-500/10 hover:from-amber-500/20 hover:to-yellow-500/20 active:scale-95 border border-amber-500/20 text-[#FAF6E9] py-2 px-2 sm:px-3 rounded-2xl transition cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
+                className="flex-1 bg-gradient-to-r from-amber-500/10 to-yellow-500/10 hover:from-amber-500/20 hover:to-yellow-500/20 active:scale-95 border border-amber-500/20 text-[#FAF6E9] py-2 px-3 rounded-2xl transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none"
                 title="Doğru Harf Fısılda veya Klavye Temizle"
               >
                 <span className="text-sm leading-none">🤫</span>
                 <div className="text-left leading-tight">
                   <span className="block text-[9px] sm:text-[10px] font-black uppercase tracking-wide">İpucu</span>
-                  <span className="block text-[8px] text-amber-400 font-mono font-bold leading-none">1 Altın</span>
+                  <span className="block text-[8px] text-amber-400 font-mono font-bold leading-none">2 Altın</span>
                 </div>
               </button>
 
@@ -5956,39 +6069,13 @@ export default function App() {
               <button
                 onClick={handleGetWordSuggestion}
                 disabled={attempts.length >= 6}
-                className="flex-1 bg-gradient-to-r from-teal-500/10 to-emerald-500/10 hover:from-teal-500/20 hover:to-emerald-500/20 active:scale-95 border border-teal-500/20 text-[#FAF6E9] py-2 px-2 sm:px-3 rounded-2xl transition cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
+                className="flex-1 bg-gradient-to-r from-teal-500/10 to-emerald-500/10 hover:from-teal-500/20 hover:to-emerald-500/20 active:scale-95 border border-teal-500/20 text-[#FAF6E9] py-2 px-3 rounded-2xl transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none"
                 title="Kurallara Uyan Kelime Öner"
               >
                 <span className="text-sm leading-none">💡</span>
                 <div className="text-left leading-tight">
                   <span className="block text-[9px] sm:text-[10px] font-black uppercase tracking-wide">Tavsiye</span>
-                  <span className="block text-[8px] text-teal-400 font-mono font-bold leading-none">1 Altın</span>
-                </div>
-              </button>
-
-              {/* WATCH AD REWARD BUTTON */}
-              <button
-                onClick={async () => {
-                  if (typeof window !== 'undefined' && (window as any).AndroidBridge && (window as any).AndroidBridge.showRewardedAd) {
-                    try {
-                      suspendAudioContext();
-                      document.body.classList.add('ad-active');
-                      (window as any).AndroidBridge.showRewardedAd();
-                    } catch (e) {
-                      await handleWatchRewardedAdReward();
-                    }
-                  } else {
-                    await handleWatchRewardedAdReward();
-                  }
-                }}
-                className="flex-1 bg-gradient-to-r from-amber-400/15 to-yellow-500/15 hover:from-amber-400/25 hover:to-yellow-500/25 active:scale-95 border border-amber-400/30 text-amber-300 py-2 px-2 sm:px-3 rounded-2xl transition cursor-pointer flex items-center justify-center gap-1 shadow-sm"
-                title="Reklam İzleyerek +10 Altın Kazan"
-                id="in-game-watch-ad-btn"
-              >
-                <span className="text-sm leading-none">📺</span>
-                <div className="text-left leading-tight">
-                  <span className="block text-[9px] sm:text-[10px] font-black uppercase tracking-wide text-amber-200">Reklam İzle</span>
-                  <span className="block text-[8px] text-amber-400 font-mono font-black leading-none">+10 🪙</span>
+                  <span className="block text-[8px] text-teal-400 font-mono font-bold leading-none">2 Altın</span>
                 </div>
               </button>
             </div>
@@ -6319,6 +6406,24 @@ export default function App() {
                       onClick={async () => {
                         if (rematchRequested) return;
                         playClickSound(settings.soundEnabled);
+
+                        // Check if opponent already sent a rematch request or challenge
+                        const existingChallenge = activeChallenges.find(
+                          c => c.challengerId === opponentPlayer.id || c.challengedId === profile?.id
+                        );
+
+                        if (opponentRematchRequested || existingChallenge) {
+                          const cId = existingChallenge?.id || ('challenge_' + opponentPlayer.id);
+                          await handleAcceptChallenge(cId, existingChallenge || {
+                            id: cId,
+                            challengerId: opponentPlayer.id,
+                            challengerName: opponentPlayer.name || 'Rakip',
+                            challengerAvatar: opponentPlayer.avatarUrl || '',
+                            wordLength: activeMatch.wordLength || wordLength || 5
+                          });
+                          return;
+                        }
+
                         setRematchRequested(true);
                         const targetLength = activeMatch.wordLength || wordLength || 5;
                         await handleChallengePlayer(opponentPlayer, targetLength);

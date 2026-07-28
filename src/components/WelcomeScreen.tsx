@@ -1190,6 +1190,16 @@ export default function WelcomeScreen({
                 <span>0 P</span>
                 <span>{progress.level < 500 ? `${progress.range} P` : '∞'}</span>
               </div>
+
+              {/* Güncel Toplam Puan Göstergesi */}
+              <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-[#E2DCBF]/80 text-xs font-bold text-[#2E3748]">
+                <span className="flex items-center gap-1.5 text-slate-600 font-semibold text-[11px] sm:text-xs">
+                  <span className="text-amber-500 text-sm">⭐</span> Güncel Toplam Puan:
+                </span>
+                <span className="font-mono font-black text-amber-700 text-xs sm:text-sm bg-amber-100/90 px-2.5 py-0.5 rounded-lg border border-amber-300/70 shadow-xs">
+                  {profile?.dailyScore || 0} Puan
+                </span>
+              </div>
             </div>
           </div>
         );

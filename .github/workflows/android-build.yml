@@ -31,8 +31,9 @@ jobs:
       - name: Java 21 Kurulumu (JDK)
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '21'
+          check-latest: false
 
       - name: Capacitor Android Projesini Hazırla
         run: |

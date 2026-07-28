@@ -149,7 +149,7 @@ export default function GoldWallet({ gold, className = '', onClick }: GoldWallet
             <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1 w-2 h-2 bg-slate-900 border-t border-l border-amber-500/30 rotate-45" />
             <p className="font-bold text-amber-400 uppercase tracking-wider mb-1">Altın Cüzdanı 🪙</p>
             <p className="text-gray-300 leading-normal">
-              Her ipucu ve kelime tavsiyesi <span className="text-amber-300 font-bold">1 Altın</span> harcar. Reklam izleyerek veya günlük ödüllerle kazanabilirsin!
+              Her ipucu ve kelime tavsiyesi <span className="text-amber-300 font-bold">2 Altın</span> harcar. Reklam izleyerek veya günlük ödüllerle kazanabilirsin!
             </p>
           </motion.div>
         )}
