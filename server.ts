@@ -600,7 +600,7 @@ app.post('/api/trigger-match-end-push', async (req, res) => {
 // Trigger FCM Challenge Push Notification Endpoint
 app.post('/api/send-challenge-notification', async (req, res) => {
   try {
-    const { challengedId, challengerName, wordLength, challengeId } = req.body || {};
+    const { challengedId, challengerName, wordLength, challengeId, isOffline } = req.body || {};
     if (!challengedId || !challengeId) {
       return res.status(400).json({ error: 'challengedId and challengeId are required' });
     }
@@ -609,7 +609,8 @@ app.post('/api/send-challenge-notification', async (req, res) => {
       challengedId,
       challengerName: challengerName || 'Bir arkadaşın',
       wordLength: Number(wordLength) || 5,
-      challengeId
+      challengeId,
+      isOffline: Boolean(isOffline)
     }).catch(() => {});
 
     res.json({ success: true, message: 'Challenge notification triggered successfully' });
@@ -625,9 +626,25 @@ async function sendFcmChallengeNotification(opts: {
   challengerName: string;
   wordLength: number;
   challengeId: string;
+  isOffline?: boolean;
 }) {
-  const { challengedId, challengerName, wordLength, challengeId } = opts;
+  const { challengedId, challengerName, wordLength, challengeId, isOffline } = opts;
   try {
+    // Save in-app notification to Firestore user subcollection as well
+    try {
+      await setDoc(doc(db, 'users', challengedId, 'notifications', challengeId), {
+        id: challengeId,
+        type: 'challenge',
+        challengerName,
+        wordLength,
+        status: 'pending',
+        read: false,
+        createdAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (dbErr) {
+      console.warn('[Notification Doc Save Error]:', dbErr);
+    }
+
     const userSnap = await getDoc(doc(db, 'users', challengedId));
     if (!userSnap.exists()) return;
     const uData = userSnap.data();
@@ -644,6 +661,9 @@ async function sendFcmChallengeNotification(opts: {
       } catch (e) {}
     }
 
+    const notificationTitle = isOffline ? '🔔 Oyunda Olmayan Birinden Meydan Okuma!' : '⚔️ Yeni Meydan Okuma!';
+    const notificationBody = `${challengerName} sana ${wordLength} harfli kelime yarışında meydan okudu! Oyuna girip düelloya katıl.`;
+
     const payload = {
       to: uData.fcmToken,
       priority: 'high',
@@ -653,12 +673,13 @@ async function sendFcmChallengeNotification(opts: {
         challengeId,
         challengerName,
         wordLength: String(wordLength),
+        isOffline: String(!!isOffline),
         timestamp: String(Date.now()),
         click_action: 'FLUTTER_NOTIFICATION_CLICK'
       },
       notification: {
-        title: '⚔️ Yeni Meydan Okuma!',
-        body: `${challengerName} sana ${wordLength} harfli kelime yarışında meydan okudu!`,
+        title: notificationTitle,
+        body: notificationBody,
         sound: 'default',
         priority: 'high'
       }
@@ -671,7 +692,7 @@ async function sendFcmChallengeNotification(opts: {
       },
       timeout: 4000
     });
-    console.log(`[FCM Challenge Push] Sent to user ${challengedId}`);
+    console.log(`[FCM Challenge Push] Sent to user ${challengedId} (isOffline: ${!!isOffline})`);
   } catch (err) {
     console.warn('[FCM Challenge Push Error]:', err);
   }
@@ -805,7 +826,23 @@ async function startServer() {
   // Local WebSocket server on /ws path
   const wss = new WebSocketServer({ server, path: '/ws' });
   const connectedClients = new Map<WebSocket, any>();
-  const matchmakingQueue: { ws: WebSocket; player: any; wordLength: number }[] = [];
+  const matchmakingQueuesByLength = new Map<number, { ws: WebSocket; player: any; wordLength: number; timestamp: number }[]>();
+
+  function removeFromAllMatchmakingQueues(ws: WebSocket, playerId?: string) {
+    matchmakingQueuesByLength.forEach((queue) => {
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const item = queue[i];
+        if (
+          !item.ws ||
+          item.ws.readyState !== WebSocket.OPEN ||
+          item.ws === ws ||
+          (playerId && item.player?.id === playerId)
+        ) {
+          queue.splice(i, 1);
+        }
+      }
+    });
+  }
 
   interface MatchPlayer {
     id: string;
@@ -1214,10 +1251,10 @@ async function startServer() {
   }, 3000);
 
   function handlePlayerDisconnect(ws: WebSocket) {
+    const client = connectedClients.get(ws);
     connectedClients.delete(ws);
-    // Remove from queue if present
-    const qIdx = matchmakingQueue.findIndex(q => q.ws === ws);
-    if (qIdx !== -1) matchmakingQueue.splice(qIdx, 1);
+    // Remove from all queues if present
+    removeFromAllMatchmakingQueues(ws, client?.id);
 
     // Check if player was in an active match
     const matchId = socketToMatchIdMap.get(ws);
@@ -1324,16 +1361,27 @@ async function startServer() {
 
           const player = { id: playerId, name: playerName, avatarUrl: playerAvatar };
           connectedClients.set(ws, player);
-          const length = Number(data.wordLength || data.length || data.wordsCount || data.duelWordLength) || 5;
+          const rawLength = data.wordLength ?? data.length ?? data.wordsCount ?? data.duelWordLength;
+          const length = Math.max(3, Math.min(10, parseInt(String(rawLength), 10) || 5));
 
-          // Remove old queue entries for this ws if any
-          const existingQueueIdx = matchmakingQueue.findIndex(q => q.ws === ws);
-          if (existingQueueIdx !== -1) matchmakingQueue.splice(existingQueueIdx, 1);
+          // Clean up stale, closed sockets or old queue entries across ALL word length queues for this ws/player ID
+          removeFromAllMatchmakingQueues(ws, player.id);
 
-          // Find waiting opponent
-          const matchIndex = matchmakingQueue.findIndex(q => Number(q.wordLength) === Number(length) && q.ws !== ws && q.ws.readyState === WebSocket.OPEN);
+          // Get or initialize dedicated queue for this exact word length
+          let lengthQueue = matchmakingQueuesByLength.get(length);
+          if (!lengthQueue) {
+            lengthQueue = [];
+            matchmakingQueuesByLength.set(length, lengthQueue);
+          }
+
+          // Find waiting opponent ONLY in this exact word length queue
+          const matchIndex = lengthQueue.findIndex(q =>
+            q.ws !== ws &&
+            q.player?.id !== player.id &&
+            q.ws.readyState === WebSocket.OPEN
+          );
           if (matchIndex !== -1) {
-            const opponent = matchmakingQueue.splice(matchIndex, 1)[0];
+            const opponent = lengthQueue.splice(matchIndex, 1)[0];
             const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
             const correctWord = turkishUpper(getRandomWord(length, true));
 
@@ -1368,7 +1416,7 @@ async function startServer() {
             socketToMatchIdMap.set(opponent.ws, matchId);
             socketToMatchIdMap.set(ws, matchId);
 
-            console.log(`[Duel Server] Created match ${matchId} for ${matchObj.player1.name} vs ${matchObj.player2.name}. Word: ${correctWord}`);
+            console.log(`[Duel Server] Created match ${matchId} for ${matchObj.player1.name} vs ${matchObj.player2.name}. Word length: ${length}, Word: ${correctWord}`);
 
             // Persist match to Firestore database instantly
             const initialFirestoreMatch = {
@@ -1448,12 +1496,12 @@ async function startServer() {
               }
             }, 2500);
           } else {
-            matchmakingQueue.push({ ws, player, wordLength: length });
+            lengthQueue.push({ ws, player, wordLength: length, timestamp: Date.now() });
             sendWs(ws, { type: 'queued', wordLength: length });
           }
         } else if (data.type === 'leave_matchmaking') {
-          const idx = matchmakingQueue.findIndex(q => q.ws === ws);
-          if (idx !== -1) matchmakingQueue.splice(idx, 1);
+          const existingClient = connectedClients.get(ws);
+          removeFromAllMatchmakingQueues(ws, data.id || existingClient?.id);
         } else if (data.type === 'submit_guess') {
           const matchId = data.matchId || socketToMatchIdMap.get(ws);
           if (!matchId) return;
@@ -1568,7 +1616,9 @@ async function startServer() {
               type: 'opponent_attempt',
               matchId: match.matchId,
               opponentId: sender.id,
-              attemptCount: sender.attempts.length
+              attemptCount: sender.attempts.length,
+              attemptsCount: sender.attempts.length,
+              attempts: sender.attempts
             });
 
             if (sender.attempts.length >= 6 && opponent.attempts.length >= 6) {
@@ -1592,6 +1642,46 @@ async function startServer() {
               socketToMatchIdMap.delete(match.player1.ws);
               socketToMatchIdMap.delete(match.player2.ws);
               setTimeout(() => activeDuelMatches.delete(matchId), 15000);
+            }
+          }
+        } else if (data.type === 'player_attempt') {
+          const matchId = data.matchId || socketToMatchIdMap.get(ws);
+          const senderId = data.playerId || connectedClients.get(ws)?.id;
+          const count = Number(data.attemptCount || data.attemptsCount || (Array.isArray(data.attempts) ? data.attempts.length : 0)) || 1;
+
+          if (matchId) {
+            const match = activeDuelMatches.get(matchId);
+            if (match) {
+              const isP1 = match.player1.id === senderId || match.player1.ws === ws;
+              const sender = isP1 ? match.player1 : match.player2;
+              if (sender && sender.attempts.length < count) {
+                while (sender.attempts.length < count) {
+                  sender.attempts.push({ word: String(data.word || ''), result: [] });
+                }
+              }
+              broadcastToMatch(match, {
+                type: 'opponent_attempt',
+                matchId: match.matchId,
+                opponentId: senderId,
+                attemptCount: count,
+                attemptsCount: count,
+                attempts: data.attempts
+              });
+            } else {
+              for (const [clientWs, clientData] of connectedClients.entries()) {
+                if (clientWs.readyState === WebSocket.OPEN && clientWs !== ws) {
+                  if (socketToMatchIdMap.get(clientWs) === matchId || (clientData.id && clientData.id !== senderId)) {
+                    sendWs(clientWs, {
+                      type: 'opponent_attempt',
+                      matchId,
+                      opponentId: senderId,
+                      attemptCount: count,
+                      attemptsCount: count,
+                      attempts: data.attempts
+                    });
+                  }
+                }
+              }
             }
           }
         } else if (data.type === 'leave_match') {
@@ -1618,9 +1708,11 @@ async function startServer() {
 
           activeServerChallenges.set(challengeId, challengeObj);
 
+          let isOpponentOnline = false;
           // Broadcast to target WebSocket client if connected
           for (const [clientWs, clientInfo] of connectedClients.entries()) {
             if (clientInfo && clientInfo.id === challengedId && clientWs.readyState === WebSocket.OPEN) {
+              isOpponentOnline = true;
               sendWs(clientWs, {
                 type: 'challenge_received',
                 challenge: challengeObj
@@ -1634,7 +1726,8 @@ async function startServer() {
             challengedId,
             challengerName,
             wordLength,
-            challengeId
+            challengeId,
+            isOffline: !isOpponentOnline
           }).catch(() => {});
         } else if (data.type === 'challenge_respond') {
           const challengeId = data.challengeId;

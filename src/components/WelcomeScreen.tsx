@@ -118,13 +118,12 @@ export default function WelcomeScreen({
   const currentDuelWordLength = duelWordLength !== undefined ? duelWordLength : localDuelWordLength;
 
   const handleDuelWordLengthChange = (len: number) => {
+    setLocalDuelWordLength(len);
+    try {
+      localStorage.setItem('kelimesavasi_duel_word_length', len.toString());
+    } catch (e) {}
     if (onChangeDuelWordLength) {
       onChangeDuelWordLength(len);
-    } else {
-      setLocalDuelWordLength(len);
-      try {
-        localStorage.setItem('kelimesavasi_duel_word_length', len.toString());
-      } catch (e) {}
     }
   };
 
@@ -241,7 +240,7 @@ export default function WelcomeScreen({
 
   const refreshFriendsList = async () => {
     if (!isOnline || !profile?.id) return;
-    setLoadingFriends(true);
+    if (confirmedFriends.length === 0) setLoadingFriends(true);
     try {
       const { confirmedFriends: confirmed, incomingRequests: incoming, updatedFriendsArray } = 
         await fetchFriendRequestsAndSync(profile);
@@ -267,8 +266,14 @@ export default function WelcomeScreen({
       setConfirmedFriends(confirmedMapped);
       setIncomingRequests(incomingMapped);
 
-      if (onUpdateFriends && updatedFriendsArray && updatedFriendsArray.length !== (profile.friends || []).length) {
-        onUpdateFriends(updatedFriendsArray);
+      if (onUpdateFriends && updatedFriendsArray) {
+        const currentFriends = profile.friends || [];
+        const isDifferent =
+          updatedFriendsArray.length !== currentFriends.length ||
+          updatedFriendsArray.some((id, idx) => id !== currentFriends[idx]);
+        if (isDifferent) {
+          onUpdateFriends(updatedFriendsArray);
+        }
       }
     } catch (err) {
       console.error('Error refreshing friends list:', err);
@@ -480,13 +485,6 @@ export default function WelcomeScreen({
       setFriendsSearchTerm('');
       setSearchedPlayers([]);
       setSearchHasRun(false);
-
-      // Periodically refresh friends list to keep online status updated live
-      const interval = setInterval(() => {
-        refreshFriendsList();
-      }, 10000);
-
-      return () => clearInterval(interval);
     }
   }, [showFriendsModal]);
 
@@ -1154,7 +1152,7 @@ export default function WelcomeScreen({
               <path d="M 96.5 92 Q 92 92 92 96.5" strokeWidth="0.75" />
             </svg>
 
-            {/* Row 1: Brain Medallion + Name & Level + Trophy cup */}
+            {/* Row 1: Brain Medallion + Name & Level */}
             <div className="flex items-center justify-between gap-3 relative z-10">
               <div className="flex items-center gap-3.5">
                 {/* Clickable Avatar with a simple, elegant circular frame */}
@@ -1177,11 +1175,6 @@ export default function WelcomeScreen({
                     {progress.level}. SEVİYE
                   </span>
                 </div>
-              </div>
-
-              {/* Trophy Cup Badge in golden rounded rect */}
-              <div className="w-10 h-10 rounded-xl bg-[#FEF9E6] border border-[#E2DCBF] flex items-center justify-center shrink-0 shadow-sm">
-                <Trophy size={20} className="text-[#C59B27] stroke-[2.5]" />
               </div>
             </div>
 

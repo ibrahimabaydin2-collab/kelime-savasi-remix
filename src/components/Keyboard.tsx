@@ -1,4 +1,5 @@
 // Complete rebuild stamp: 2026-07-23 v1.0.2
+import React, { memo } from 'react';
 import { motion } from 'motion/react';
 import { Delete } from 'lucide-react';
 
@@ -12,7 +13,7 @@ interface KeyboardProps {
   disabled?: boolean;
 }
 
-export default function Keyboard({
+function Keyboard({
   onChar,
   onDelete,
   onEnter,
@@ -122,3 +123,5 @@ export default function Keyboard({
     </div>
   );
 }
+
+export default memo(Keyboard);

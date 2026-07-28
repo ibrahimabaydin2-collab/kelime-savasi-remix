@@ -1,4 +1,5 @@
 // Complete rebuild stamp: 2026-07-23 v1.0.2
+import React, { memo } from 'react';
 import { motion } from 'motion/react';
 
 interface GameBoardProps {
@@ -12,7 +13,7 @@ interface GameBoardProps {
   isDuplicateAttempt?: boolean;
 }
 
-export default function GameBoard({
+function GameBoard({
   attempts,
   currentAttempt,
   wordLength,
@@ -148,20 +149,31 @@ export default function GameBoard({
                 );
               }
 
+              if (isSubmitted) {
+                return (
+                  <motion.div
+                    key={`sub-${rowIndex}-${charIndex}-${char}`}
+                    initial={{ rotateX: 0 }}
+                    animate={{
+                      rotateX: [0, 90, 0],
+                      transition: { delay: charIndex * 0.12, duration: 0.45 }
+                    }}
+                    className={finalClass}
+                    id={`cell-${rowIndex}-${charIndex}`}
+                  >
+                    <span className="font-sans font-bold">
+                      {displayChar}
+                    </span>
+                  </motion.div>
+                );
+              }
+
               return (
                 <motion.div
-                  key={charIndex}
-                  initial={isSubmitted ? { rotateX: 0 } : false}
-                  animate={
-                    isSubmitted
-                      ? {
-                          rotateX: [0, 90, 0],
-                          transition: { delay: charIndex * 0.15, duration: 0.5 }
-                        }
-                      : isActive && char !== ' '
-                      ? { scale: [1, 1.1, 1] }
-                      : {}
-                  }
+                  key={`act-${rowIndex}-${charIndex}-${char}`}
+                  initial={isActive && char !== ' ' ? { scale: 1.12 } : false}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 28 }}
                   className={finalClass}
                   id={`cell-${rowIndex}-${charIndex}`}
                 >
@@ -177,3 +189,5 @@ export default function GameBoard({
     </div>
   );
 }
+
+export default memo(GameBoard);

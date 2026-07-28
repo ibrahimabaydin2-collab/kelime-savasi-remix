@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 
 export interface ProgressDotsProps {
   currentAttemptCount: number;
@@ -10,7 +10,7 @@ export interface ProgressDotsProps {
   className?: string;
 }
 
-export default function ProgressDots({
+function ProgressDots({
   currentAttemptCount,
   maxAttempts = 6,
   isCompleted = false,
@@ -19,6 +19,7 @@ export default function ProgressDots({
   showLabel = true,
   className = ''
 }: ProgressDotsProps) {
+  const safeCount = Math.min(Math.max(Number(currentAttemptCount) || 0, 0), maxAttempts);
   const isEmerald = colorScheme === 'emerald';
 
   const filledColor = isEmerald
@@ -35,8 +36,8 @@ export default function ProgressDots({
     <div className={`mt-1 pt-1 border-t border-white/5 flex items-center justify-between ${className}`}>
       <div className="flex gap-1 items-center">
         {Array.from({ length: maxAttempts }).map((_, idx) => {
-          const isFilled = idx < currentAttemptCount;
-          const isCurrent = idx === currentAttemptCount && !isCompleted;
+          const isFilled = idx < safeCount;
+          const isCurrent = idx === safeCount && !isCompleted;
           return (
             <span
               key={idx}
@@ -57,9 +58,11 @@ export default function ProgressDots({
             ? isWon
               ? 'Bildi ✓'
               : 'Bitti'
-            : `Deneme ${currentAttemptCount}/${maxAttempts}`}
+            : `Deneme ${safeCount}/${maxAttempts}`}
         </span>
       )}
     </div>
   );
 }
+
+export default memo(ProgressDots);

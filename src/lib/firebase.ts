@@ -465,6 +465,10 @@ export async function updateUserPresence(uid: string, isOnline: boolean = true):
  */
 export async function clearMatchmakingState(uid: string): Promise<void> {
   if (!uid) return;
+  deleteDoc(doc(db, 'matchmaking_queue', uid)).catch(() => {});
+  [3, 4, 5, 6, 7, 8, 9, 10].forEach((len) => {
+    deleteDoc(doc(db, `matchmaking_queue_${len}`, uid)).catch(() => {});
+  });
   const userDocRef = doc(db, 'users', uid);
   try {
     await updateDoc(userDocRef, {

@@ -87,7 +87,12 @@ const DEFAULT_BADGES: Badge[] = [
   // 8 Harfli Modu
   { id: 'solve_8_10', title: '8 Harfli Çömez', description: '8 harfli modda toplam 10 kelimeyi doğru bil', iconName: 'Award' },
   { id: 'solve_8_50', title: '8 Harfli Usta', description: '8 harfli modda toplam 50 kelimeyi doğru bil', iconName: 'Trophy' },
-  { id: 'solve_8_150', title: '8 Harfli Efsane', description: '8 harfli modda toplam 150 kelimeyi doğru bil', iconName: 'Crown' }
+  { id: 'solve_8_150', title: '8 Harfli Efsane', description: '8 harfli modda toplam 150 kelimeyi doğru bil', iconName: 'Crown' },
+
+  // Hızlı Çözücü (Speed Solver) Modu
+  { id: 'fast_solve_15', title: 'Hızlı Çözücü ⚡', description: 'Bir oyunu 15 saniye veya daha kısa sürede tamamla', iconName: 'Zap' },
+  { id: 'fast_solve_10', title: 'Şimşek Zeka 🌩️', description: 'Bir oyunu 10 saniye veya daha kısa sürede tamamla', iconName: 'Flame' },
+  { id: 'fast_solve_5', title: 'Işık Hızı 🚀', description: 'Bir oyunu 5 saniye veya daha kısa sürede tamamla', iconName: 'Sparkles' }
 ];
 
 const DEFAULT_MISSIONS: DailyMission[] = [
@@ -318,6 +323,135 @@ const resolveDuelPlayers = (rawP1: any, rawP2: any, profile: { id?: string; name
   };
 };
 
+/**
+ * Utility to check if a key or player object represents "self".
+ */
+const checkIsSelfPlayer = (keyOrObj: any, currentUid: string, profileId?: string): boolean => {
+  if (!keyOrObj) return false;
+  const uidStr = String(currentUid || '').trim();
+  const profStr = String(profileId || '').trim();
+
+  if (typeof keyOrObj === 'string') {
+    const k = keyOrObj.trim();
+    if (uidStr && k === uidStr) return true;
+    if (profStr && k === profStr) return true;
+    if (k === 'self' || k === 'me') return true;
+    return false;
+  }
+
+  const pId = String(keyOrObj.id || keyOrObj.uid || keyOrObj.profileId || '').trim();
+  if (uidStr && pId && pId === uidStr) return true;
+  if (profStr && pId && pId === profStr) return true;
+  return false;
+};
+
+/**
+ * Robust helper to extract accurate attempt count, attempts array, and win/completed status for any player in activeMatch.
+ */
+const getPlayerAttemptData = (
+  match: any,
+  isSelf: boolean,
+  currentUid: string,
+  profileId: string = '',
+  localAttempts: any[] = [],
+  fallbackCountState: number = 0
+) => {
+  let attemptsArray: any[] = isSelf ? [...localAttempts] : [];
+  let maxCount = isSelf ? localAttempts.length : fallbackCountState;
+  let isWon = false;
+  let isCompleted = false;
+
+  if (!match) {
+    const localWon = isSelf && attemptsArray.some((a: any) => Array.isArray(a?.feedback) && a.feedback.every((f: string) => f === 'green'));
+    return {
+      count: Math.min(Math.max(maxCount, 0), 6),
+      attempts: attemptsArray,
+      isWon: localWon,
+      isCompleted: maxCount >= 6 || localWon
+    };
+  }
+
+  const processEntry = (obj: any, attsFromMatch?: any) => {
+    if (!obj) return;
+
+    const candidateAtts = attsFromMatch || obj.attempts || obj.guesses;
+    if (Array.isArray(candidateAtts) && candidateAtts.length > 0) {
+      if (candidateAtts.length > maxCount) {
+        maxCount = candidateAtts.length;
+      }
+      if (candidateAtts.length > attemptsArray.length) {
+        attemptsArray = candidateAtts;
+      }
+      if (candidateAtts.some((a: any) => Array.isArray(a?.feedback) && a.feedback.every((f: string) => f === 'green'))) {
+        isWon = true;
+      }
+    }
+
+    const countVal = Number(obj.currentAttemptCount ?? obj.attemptsCount ?? obj.attemptCount ?? (Array.isArray(candidateAtts) ? candidateAtts.length : 0)) || 0;
+    if (countVal > maxCount) {
+      maxCount = countVal;
+    }
+
+    if (obj.won === true || obj.isWon === true || obj.hasWon === true) {
+      isWon = true;
+    }
+    if (obj.completed === true || obj.isCompleted === true || countVal >= 6 || isWon) {
+      isCompleted = true;
+    }
+  };
+
+  // 1. Scan match.players map
+  if (match.players && typeof match.players === 'object') {
+    Object.entries(match.players).forEach(([k, pObj]: [string, any]) => {
+      const entryIsSelf = checkIsSelfPlayer(k, currentUid, profileId) || checkIsSelfPlayer(pObj, currentUid, profileId);
+      if (entryIsSelf === isSelf) {
+        const attsFromMatch = match.attempts?.[k];
+        processEntry(pObj, attsFromMatch);
+      }
+    });
+  }
+
+  // 2. Scan match.attempts map
+  if (match.attempts && typeof match.attempts === 'object') {
+    Object.entries(match.attempts).forEach(([k, atts]: [string, any]) => {
+      const entryIsSelf = checkIsSelfPlayer(k, currentUid, profileId);
+      if (entryIsSelf === isSelf && Array.isArray(atts)) {
+        if (atts.length > maxCount) maxCount = atts.length;
+        if (atts.length > attemptsArray.length) attemptsArray = atts;
+        if (atts.some((a: any) => Array.isArray(a?.feedback) && a.feedback.every((f: string) => f === 'green'))) {
+          isWon = true;
+        }
+      }
+    });
+  }
+
+  // 3. Scan top-level player1 / player2
+  ['player1', 'player2'].forEach((pKey) => {
+    const pObj = match[pKey];
+    if (pObj) {
+      const entryIsSelf = checkIsSelfPlayer(pObj, currentUid, profileId);
+      if (entryIsSelf === isSelf) {
+        processEntry(pObj);
+      }
+    }
+  });
+
+  if (isSelf && attemptsArray.some((a: any) => Array.isArray(a?.feedback) && a.feedback.every((f: string) => f === 'green'))) {
+    isWon = true;
+  }
+
+  if (maxCount >= 6 || isWon) {
+    isCompleted = true;
+  }
+
+  return {
+    count: Math.min(Math.max(maxCount, 0), 6),
+    attempts: attemptsArray,
+    isWon,
+    isCompleted
+  };
+};
+
 function MatchStartOverlay({
   activeMatch,
   profile,
@@ -328,6 +462,12 @@ function MatchStartOverlay({
   onStartGame: () => void;
 }) {
   const [countdown, setCountdown] = useState<number>(3);
+  const onStartGameRef = useRef(onStartGame);
+  const hasTriggeredRef = useRef(false);
+
+  useEffect(() => {
+    onStartGameRef.current = onStartGame;
+  }, [onStartGame]);
 
   const selfId = profile?.id;
   const activeProfile = { ...profile, id: selfId };
@@ -336,11 +476,19 @@ function MatchStartOverlay({
   const p2 = resolved.player2 || { name: 'Rakip', avatarUrl: '⚔️' };
 
   useEffect(() => {
+    hasTriggeredRef.current = false;
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          onStartGame();
+          if (!hasTriggeredRef.current) {
+            hasTriggeredRef.current = true;
+            setTimeout(() => {
+              if (onStartGameRef.current) {
+                onStartGameRef.current();
+              }
+            }, 0);
+          }
           return 0;
         }
         return prev - 1;
@@ -348,7 +496,7 @@ function MatchStartOverlay({
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [onStartGame]);
+  }, [activeMatch?.id || activeMatch?.matchId]);
 
   return (
     <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-xl text-[#FAF6E9] p-4 select-none animate-fade-in">
@@ -1059,7 +1207,7 @@ export default function App() {
     matchmakingStatusRef.current = matchmakingStatus;
   }, [matchmakingStatus]);
 
-  const duelWordLengthRef = useRef<number>(5);
+  const duelWordLengthRef = useRef<number>(duelWordLength);
   useEffect(() => {
     duelWordLengthRef.current = duelWordLength;
   }, [duelWordLength]);
@@ -1298,51 +1446,32 @@ export default function App() {
   const [selfCurrentAttemptCount, setSelfCurrentAttemptCount] = useState<number>(0);
   const [oppCurrentAttemptCount, setOppCurrentAttemptCount] = useState<number>(0);
 
+  const currentMatchId = activeMatch?.id || activeMatch?.matchId;
+  const prevMatchIdForAttemptsRef = useRef<string | null>(null);
+
   // Read currentAttemptCount from Firestore's players object and pass to ProgressDots props
   useEffect(() => {
-    if (!activeMatch || !activeMatch.players) {
+    if (!activeMatch) {
       setSelfCurrentAttemptCount(attempts.length);
       setOppCurrentAttemptCount(0);
+      prevMatchIdForAttemptsRef.current = null;
       return;
     }
 
+    if (prevMatchIdForAttemptsRef.current !== currentMatchId) {
+      prevMatchIdForAttemptsRef.current = currentMatchId;
+      setOppCurrentAttemptCount(0);
+    }
+
     const currentAuthUid = auth.currentUser?.uid || profile?.id || '';
-    const selfKey = profile?.id || currentAuthUid;
+    const profileId = profile?.id || '';
 
-    // Read currentAttemptCount from players object for self
-    const selfPlayerData = activeMatch.players[selfKey] || activeMatch.players[currentAuthUid] || {};
-    const selfCount =
-      typeof selfPlayerData.currentAttemptCount === 'number'
-        ? selfPlayerData.currentAttemptCount
-        : typeof selfPlayerData.attemptsCount === 'number'
-        ? selfPlayerData.attemptsCount
-        : Array.isArray(selfPlayerData.attempts)
-        ? selfPlayerData.attempts.length
-        : attempts.length;
+    const selfData = getPlayerAttemptData(activeMatch, true, currentAuthUid, profileId, attempts, selfCurrentAttemptCount);
+    const oppData = getPlayerAttemptData(activeMatch, false, currentAuthUid, profileId, [], oppCurrentAttemptCount);
 
-    setSelfCurrentAttemptCount(selfCount);
-
-    // Read currentAttemptCount from players object for opponent across all non-self keys
-    let maxOppCount = 0;
-    Object.entries(activeMatch.players).forEach(([id, p]: [string, any]) => {
-      const isSelf = id === selfKey || id === currentAuthUid || (p && (p.id === selfKey || p.uid === selfKey || p.id === currentAuthUid || p.uid === currentAuthUid));
-      if (!isSelf && p) {
-        const count =
-          typeof p.currentAttemptCount === 'number'
-            ? p.currentAttemptCount
-            : typeof p.attemptsCount === 'number'
-            ? p.attemptsCount
-            : Array.isArray(p.attempts)
-            ? p.attempts.length
-            : 0;
-        if (count > maxOppCount) {
-          maxOppCount = count;
-        }
-      }
-    });
-
-    setOppCurrentAttemptCount(maxOppCount);
-  }, [activeMatch, activeMatch?.players, attempts.length, profile?.id]);
+    setSelfCurrentAttemptCount(selfData.count);
+    setOppCurrentAttemptCount((prev) => Math.max(prev, oppData.count));
+  }, [activeMatch, activeMatch?.players, activeMatch?.attempts, attempts.length, profile?.id, currentMatchId]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const wasOnlineRef = useRef<boolean>(false);
@@ -1901,6 +2030,7 @@ export default function App() {
               const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
               const target = turkishUpper(data.targetWord || data.correctWord || '');
+              const matchLen = Number(data.wordLength) || target.length || 5;
               if (target) setTargetWord(target);
               setActiveMatch({
                 id: data.matchId,
@@ -1911,31 +2041,63 @@ export default function App() {
                 player1: p1,
                 player2: p2,
                 players: parsedPlayers,
-                wordLength: data.wordLength
+                wordLength: matchLen
               });
-              setWordLength(data.wordLength);
+              setWordLength(matchLen);
+              setDuelWordLength(matchLen);
+              duelWordLengthRef.current = matchLen;
             } else if (data.type === 'match_ready') {
               const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
               const target = turkishUpper(data.targetWord || data.correctWord || '');
+              const matchLen = Number(data.wordLength) || target.length || 5;
               if (target) setTargetWord(target);
-              setActiveMatch((prev: any) => ({
-                ...prev,
-                gameState: 'READY',
-                ...(target ? { targetWord: target, correctWord: target } : {}),
-                player1: p1,
-                player2: p2,
-                players: parsedPlayers
-              }));
+              setWordLength(matchLen);
+              setDuelWordLength(matchLen);
+              duelWordLengthRef.current = matchLen;
+              isMatchEndedRef.current = false;
+              if (data.matchId) handledMatchEndIdsRef.current.delete(data.matchId);
+              setRematchRequested(false);
+              setOpponentRematchRequested(false);
+
+              const cleanPlayers = { ...parsedPlayers };
+              Object.keys(cleanPlayers).forEach(k => {
+                cleanPlayers[k] = { ...cleanPlayers[k], attempts: [], completed: false, won: false, isWinner: false };
+              });
+
+              setActiveMatch((prev: any) => {
+                const isSameMatch = prev && (prev.id === data.matchId || prev.matchId === data.matchId);
+                const base = isSameMatch ? prev : {};
+                return {
+                  ...base,
+                  id: data.matchId,
+                  matchId: data.matchId,
+                  gameState: 'READY',
+                  status: 'waiting_ready',
+                  isGameOver: false,
+                  gameOver: false,
+                  winner: null,
+                  winnerId: null,
+                  winnerUserId: null,
+                  winReason: null,
+                  ...(target ? { targetWord: target, correctWord: target } : {}),
+                  player1: p1,
+                  player2: p2,
+                  players: cleanPlayers,
+                  wordLength: matchLen
+                };
+              });
               showToast('Rakip bağlandı! Oyun hazırlanıyor... ⚔️', 'info');
             } else if (data.type === 'match_start') {
               console.log('[WebSocket Manager] Match START:', data);
-              const matchLen = data.wordLength || 5;
               const target = turkishUpper(data.targetWord || data.correctWord || '');
+              const matchLen = Number(data.wordLength) || target.length || 5;
               if (target) {
                 setTargetWord(target);
               }
               setWordLength(matchLen);
+              setDuelWordLength(matchLen);
+              duelWordLengthRef.current = matchLen;
               setAttempts([]);
               setCurrentAttempt('');
               setLetterStatuses({});
@@ -1944,23 +2106,42 @@ export default function App() {
               setMatchmakingStatus('idle');
               setIsMatchmakingLocked(false);
               setOpponentLeftDuringMatch(false);
+              setRematchRequested(false);
+              setOpponentRematchRequested(false);
               setShowCongratsModal(false);
+              isMatchEndedRef.current = false;
+              if (data.matchId) handledMatchEndIdsRef.current.delete(data.matchId);
 
               const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(data.player1, data.player2, profile, data.players);
 
-              setActiveMatch((prev: any) => ({
-                ...prev,
-                id: data.matchId,
-                matchId: data.matchId,
-                gameState: 'PLAYING',
-                status: 'playing',
-                targetWord: target || prev?.targetWord || prev?.correctWord || '',
-                correctWord: target || prev?.targetWord || prev?.correctWord || '',
-                player1: p1,
-                player2: p2,
-                players: parsedPlayers,
-                wordLength: matchLen
-              }));
+              const cleanPlayers = { ...parsedPlayers };
+              Object.keys(cleanPlayers).forEach(k => {
+                cleanPlayers[k] = { ...cleanPlayers[k], attempts: [], completed: false, won: false, isWinner: false };
+              });
+
+              setActiveMatch((prev: any) => {
+                const isSameMatch = prev && (prev.id === data.matchId || prev.matchId === data.matchId);
+                const base = isSameMatch ? prev : {};
+                return {
+                  ...base,
+                  id: data.matchId,
+                  matchId: data.matchId,
+                  gameState: 'PLAYING',
+                  status: 'playing',
+                  isGameOver: false,
+                  gameOver: false,
+                  winner: null,
+                  winnerId: null,
+                  winnerUserId: null,
+                  winReason: null,
+                  targetWord: target || base?.targetWord || base?.correctWord || '',
+                  correctWord: target || base?.targetWord || base?.correctWord || '',
+                  player1: p1,
+                  player2: p2,
+                  players: cleanPlayers,
+                  wordLength: matchLen
+                };
+              });
 
               playEnterSound(settings.soundEnabled);
               showToast('Düello başladı! Aynı kelimeyi ilk bulan kazanır! ⚡', 'success');
@@ -1987,7 +2168,7 @@ export default function App() {
 
               playEnterSound(settings.soundEnabled);
             } else if (data.type === 'opponent_attempt') {
-              if (!hasEnteredGameRef.current || !activeMatchRef.current) return;
+              if (!hasEnteredGameRef.current && !activeMatchRef.current) return;
               const currentAuthUid = auth.currentUser?.uid;
               const selfId = currentAuthUid || profile?.id || '';
               if (data.opponentId && (data.opponentId === selfId || (profile?.id && data.opponentId === profile.id))) {
@@ -2002,15 +2183,18 @@ export default function App() {
               setActiveMatch((prev: any) => {
                 if (!prev) return null;
                 const updatedPlayers = { ...(prev.players || {}) };
+                const currentLen = prev.targetWord?.length || prev.wordLength || targetWord?.length || wordLength || 6;
 
+                let updatedAnyOpponent = false;
                 Object.keys(updatedPlayers).forEach((key) => {
                   const p = updatedPlayers[key];
                   const isSelfKey = key === selfId || (profile?.id && key === profile.id) || p?.id === selfId || p?.uid === selfId || (profile?.id && (p?.id === profile.id || p?.uid === profile.id));
                   if (!isSelfKey) {
+                    updatedAnyOpponent = true;
                     const currentAtts = Array.isArray(p?.attempts) ? p.attempts : [];
                     let newAtts = [...currentAtts];
                     while (newAtts.length < targetCount) {
-                      newAtts.push({ word: '*****', feedback: ['grey', 'grey', 'grey', 'grey', 'grey'] });
+                      newAtts.push({ word: ' '.repeat(currentLen), feedback: Array(currentLen).fill('grey') });
                     }
                     updatedPlayers[key] = {
                       ...p,
@@ -2022,10 +2206,10 @@ export default function App() {
                 });
 
                 const oppId = data.opponentId;
-                if (oppId && !updatedPlayers[oppId] && oppId !== selfId && (!profile?.id || oppId !== profile.id)) {
+                if (oppId && (!updatedPlayers[oppId] || !updatedAnyOpponent) && oppId !== selfId && (!profile?.id || oppId !== profile.id)) {
                   let newAtts = [];
                   while (newAtts.length < targetCount) {
-                    newAtts.push({ word: '*****', feedback: ['grey', 'grey', 'grey', 'grey', 'grey'] });
+                    newAtts.push({ word: ' '.repeat(currentLen), feedback: Array(currentLen).fill('grey') });
                   }
                   updatedPlayers[oppId] = {
                     id: oppId,
@@ -2181,6 +2365,7 @@ export default function App() {
       avatarUrl: selfAvatar,
       attempts: updatedAttempts,
       attemptsCount,
+      currentAttemptCount: attemptsCount,
       completed,
       won,
       score,
@@ -2327,8 +2512,12 @@ export default function App() {
     const matchObj = activeMatchRef.current || activeMatch;
     if (!matchObj) return;
 
+    const matchId = matchObj.matchId || matchObj.id;
     const matchLen = Number(matchObj.wordLength || wordLength || 5);
     const target = turkishUpper(matchObj.targetWord || matchObj.correctWord || targetWord || '');
+
+    isMatchEndedRef.current = false;
+    if (matchId) handledMatchEndIdsRef.current.delete(matchId);
 
     if (target) {
       setTargetWord(target);
@@ -2343,14 +2532,63 @@ export default function App() {
     setIsMatchmakingLocked(false);
     setOpponentLeftDuringMatch(false);
     setShowCongratsModal(false);
+    setRematchRequested(false);
+    setOpponentRematchRequested(false);
 
-    setActiveMatch((prev: any) => ({
-      ...prev,
-      gameState: 'PLAYING',
-      status: 'playing',
-      targetWord: target || prev?.targetWord || prev?.correctWord || '',
-      correctWord: target || prev?.targetWord || prev?.correctWord || ''
-    }));
+    setActiveMatch((prev: any) => {
+      const isSameMatch = prev && (prev.id === matchId || prev.matchId === matchId);
+      const base = isSameMatch ? prev : (matchObj || {});
+
+      const cleanedPlayers = { ...(base.players || matchObj.players || {}) };
+      Object.keys(cleanedPlayers).forEach(pKey => {
+        cleanedPlayers[pKey] = {
+          ...cleanedPlayers[pKey],
+          attempts: [],
+          completed: false,
+          won: false,
+          isWinner: false
+        };
+      });
+
+      return {
+        ...base,
+        id: matchId,
+        matchId,
+        gameState: 'PLAYING',
+        status: 'playing',
+        isGameOver: false,
+        gameOver: false,
+        won: false,
+        winner: null,
+        winnerId: null,
+        winnerUserId: null,
+        winReason: null,
+        targetWord: target || base?.targetWord || base?.correctWord || '',
+        correctWord: target || base?.targetWord || base?.correctWord || '',
+        player1: base.player1 || matchObj.player1,
+        player2: base.player2 || matchObj.player2,
+        players: cleanedPlayers
+      };
+    });
+
+    if (matchId) {
+      const matchUpdate = {
+        gameState: 'PLAYING',
+        status: 'playing',
+        targetWord: target || matchObj.targetWord || matchObj.correctWord || '',
+        correctWord: target || matchObj.targetWord || matchObj.correctWord || ''
+      };
+      setDoc(doc(db, 'matches', matchId), matchUpdate, { merge: true }).catch((err) => console.warn('Error updating match start in matches:', err));
+      setDoc(doc(db, 'rooms', matchId), matchUpdate, { merge: true }).catch((err) => console.warn('Error updating match start in rooms:', err));
+    }
+
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && matchId) {
+      socketRef.current.send(JSON.stringify({
+        type: 'match_start',
+        matchId,
+        gameState: 'PLAYING'
+      }));
+    }
 
     playEnterSound(settings.soundEnabled);
   }, [wordLength, targetWord, settings.soundEnabled, activeMatch]);
@@ -2688,6 +2926,9 @@ export default function App() {
           const target = turkishUpper(matchPayload?.targetWord || matchPayload?.correctWord || data.targetWord || data.correctWord || '');
           const matchLen = Number(matchPayload?.wordLength || defaultLen);
 
+          isMatchEndedRef.current = false;
+          if (matchId) handledMatchEndIdsRef.current.delete(matchId);
+
           if (target) {
             setTargetWord(target);
           }
@@ -2695,10 +2936,13 @@ export default function App() {
           setAttempts([]);
           setCurrentAttempt('');
           setLetterStatuses({});
+          setHasEnteredGame(true);
           setMatchmakingStatus('idle');
           setIsMatchmakingLocked(false);
           setOpponentLeftDuringMatch(false);
           setShowCongratsModal(false);
+          setRematchRequested(false);
+          setOpponentRematchRequested(false);
 
           const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(
             matchPayload?.player1,
@@ -2707,18 +2951,29 @@ export default function App() {
             matchPayload?.players
           );
 
+          const cleanPlayers = { ...parsedPlayers };
+          Object.keys(cleanPlayers).forEach((k) => {
+            cleanPlayers[k] = { ...cleanPlayers[k], attempts: [], completed: false, won: false, isWinner: false };
+          });
+
           setActiveMatch({
             ...(matchPayload || {}),
             id: matchId,
             matchId: matchId,
             gameState: 'READY',
             status: 'waiting_ready',
+            isGameOver: false,
+            gameOver: false,
+            winner: null,
+            winnerId: null,
+            winnerUserId: null,
+            winReason: null,
             targetWord: target,
             correctWord: target,
             wordLength: matchLen,
             player1: p1,
             player2: p2,
-            players: parsedPlayers
+            players: cleanPlayers
           });
 
           deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
@@ -2832,7 +3087,14 @@ export default function App() {
     }
 
     if (!serverWinnerUserId && matchData.winReason === 'opponent_left') {
-      serverWinnerUserId = auth.currentUser?.uid || profile?.id || '';
+      const currentUid = auth.currentUser?.uid || profile?.id || '';
+      const loserUid = matchData.loser || matchData.loserId;
+      if (loserUid && (loserUid === currentUid || (profile?.id && loserUid === profile.id))) {
+        const oppEntry = Object.values(matchData.players || {}).find((p: any) => p && p.id && p.id !== currentUid && (!profile?.id || p.id !== profile.id)) as any;
+        serverWinnerUserId = matchData.winner || matchData.winnerId || oppEntry?.id || 'opponent';
+      } else {
+        serverWinnerUserId = currentUid;
+      }
     }
 
     const isFinished = 
@@ -2878,16 +3140,19 @@ export default function App() {
       if (!activeMatchRef.current) return;
 
       setActiveMatch((prev: any) => {
-        const base = prev || {
-          id: data.matchId || data.id,
-          matchId: data.matchId || data.id,
+        const snapshotMatchId = data.matchId || data.id || matchId;
+        const isSameMatch = prev && (prev.id === snapshotMatchId || prev.matchId === snapshotMatchId);
+
+        const base = isSameMatch ? prev : {
+          id: snapshotMatchId,
+          matchId: snapshotMatchId,
           targetWord: data.targetWord || data.correctWord || '',
           correctWord: data.targetWord || data.correctWord || '',
           wordLength: data.wordLength || 5,
           gameState: data.gameState || 'PLAYING',
           status: data.status || 'playing'
         };
-        const currentPlayers = base.players || {};
+        const currentPlayers = isSameMatch ? (base.players || {}) : {};
         const incomingPlayers = data.players || {};
         const mergedPlayers = { ...currentPlayers };
 
@@ -2908,9 +3173,37 @@ export default function App() {
           data.players || mergedPlayers || base.players
         );
 
+        // Prevent reverting from PLAYING back to WAITING or READY due to stale incoming snapshot
+        const effectiveGameState = (prev?.gameState === 'PLAYING' && (data.gameState === 'READY' || data.gameState === 'WAITING'))
+          ? 'PLAYING'
+          : (data.gameState || base.gameState || 'PLAYING');
+        const effectiveStatus = (prev?.status === 'playing' && (data.status === 'waiting_ready' || data.status === 'waiting'))
+          ? 'playing'
+          : (data.status || base.status || 'playing');
+
+        const isExplicitlyOver = 
+          data.isGameOver === true || 
+          data.status === 'ended' || 
+          data.status === 'finished' || 
+          data.status === 'completed' || 
+          data.gameState === 'FINISHED';
+
+        const cleanWinnerFields = isExplicitlyOver ? {} : {
+          winner: null,
+          winnerId: null,
+          winnerUserId: null,
+          winReason: null,
+          isGameOver: false,
+          gameOver: false
+        };
+
         const newMatch = {
           ...base,
+          ...cleanWinnerFields,
           ...data,
+          ...(isExplicitlyOver ? {} : cleanWinnerFields),
+          gameState: effectiveGameState,
+          status: effectiveStatus,
           player1: resolved.player1,
           player2: resolved.player2,
           players: {
@@ -2925,6 +3218,8 @@ export default function App() {
           prev.gameState === newMatch.gameState &&
           prev.status === newMatch.status &&
           prev.targetWord === newMatch.targetWord &&
+          prev.isGameOver === newMatch.isGameOver &&
+          prev.winner === newMatch.winner &&
           JSON.stringify(prev.player1) === JSON.stringify(newMatch.player1) &&
           JSON.stringify(prev.player2) === JSON.stringify(newMatch.player2) &&
           JSON.stringify(prev.players) === JSON.stringify(newMatch.players)
@@ -3019,29 +3314,54 @@ export default function App() {
 
   const handleLeaveMatchToMenu = useCallback(async () => {
     console.log('Centralized cleanup: returning to main menu');
-    hasEnteredGameRef.current = false;
-    activeMatchRef.current = null;
-    isMatchEndedRef.current = false;
 
     if (activeMatch) {
       const matchId = activeMatch.matchId || activeMatch.id;
-      const opponentPlayer = Object.values(activeMatch.players || {}).find((p: any) => p?.id && (!profile?.id || p?.id !== profile.id)) as any;
+      const currentUid = auth.currentUser?.uid || profile?.id || '';
+      let oppId = '';
+
+      const p1Id = activeMatch.player1?.id || activeMatch.player1?.uid;
+      const p2Id = activeMatch.player2?.id || activeMatch.player2?.uid;
+      if (p1Id && p1Id !== currentUid && (!profile?.id || p1Id !== profile.id)) {
+        oppId = p1Id;
+      } else if (p2Id && p2Id !== currentUid && (!profile?.id || p2Id !== profile.id)) {
+        oppId = p2Id;
+      }
+
+      if (!oppId && activeMatch.players) {
+        const oppObj = Object.values(activeMatch.players).find((p: any) => p?.id && p?.id !== currentUid && (!profile?.id || p?.id !== profile.id)) as any;
+        if (oppObj?.id) {
+          oppId = oppObj.id;
+        } else {
+          const oppKey = Object.keys(activeMatch.players).find(k => k !== currentUid && (!profile?.id || k !== profile.id));
+          if (oppKey) oppId = oppKey;
+        }
+      }
+      if (!oppId) oppId = 'opponent';
+
       if (matchId) {
         const leavePayload = {
           isGameOver: true,
+          gameOver: true,
           status: 'finished',
           gameState: 'finished',
           winReason: 'opponent_left',
-          winner: opponentPlayer?.id || 'opponent',
-          winnerId: opponentPlayer?.id || 'opponent',
-          finishedBy: opponentPlayer?.id || 'opponent',
-          loser: profile?.id || '',
+          winner: oppId,
+          winnerUserId: oppId,
+          winnerId: oppId,
+          finishedBy: oppId,
+          loser: currentUid,
+          loserId: currentUid,
           updatedAt: new Date().toISOString()
         };
         setDoc(doc(db, 'matches', matchId), leavePayload, { merge: true }).catch(() => {});
         setDoc(doc(db, 'rooms', matchId), leavePayload, { merge: true }).catch(() => {});
       }
     }
+
+    hasEnteredGameRef.current = false;
+    activeMatchRef.current = null;
+    isMatchEndedRef.current = false;
 
     if (matchUnsubscribeRef.current) {
       try { matchUnsubscribeRef.current(); } catch (e) {}
@@ -3071,6 +3391,8 @@ export default function App() {
     setShowLobbyModal(false);
     setIsMatchmakingLocked(false);
     setOpponentLeftDuringMatch(false);
+    setRematchRequested(false);
+    setOpponentRematchRequested(false);
     pendingMatchmakingRef.current = null;
     setSelfCurrentAttemptCount(0);
     setOppCurrentAttemptCount(0);
@@ -3442,14 +3764,18 @@ export default function App() {
       );
 
       // Robust fallback if target word is missing or mismatched in length
-      if (!target || target.length !== wordLength) {
-        target = turkishUpper(getRandomWord(wordLength, true));
+      const matchWordLen = Number(activeMatch?.wordLength || wordLength || target?.length || 5);
+      if (!target || target.length !== matchWordLen) {
+        target = turkishUpper(getRandomWord(matchWordLen, true));
         setTargetWord(target);
+        setWordLength(matchWordLen);
+        setDuelWordLength(matchWordLen);
+        duelWordLengthRef.current = matchWordLen;
         if (activeMatch) {
           const matchId = activeMatch.matchId || activeMatch.id;
-          setActiveMatch((prev: any) => prev ? { ...prev, targetWord: target, correctWord: target } : prev);
+          setActiveMatch((prev: any) => prev ? { ...prev, targetWord: target, correctWord: target, wordLength: matchWordLen } : prev);
           if (matchId) {
-            updateDoc(doc(db, 'matches', matchId), { targetWord: target, correctWord: target }).catch(() => {});
+            updateDoc(doc(db, 'matches', matchId), { targetWord: target, correctWord: target, wordLength: matchWordLen }).catch(() => {});
           }
         }
       }
@@ -3474,6 +3800,25 @@ export default function App() {
       setLetterStatuses(newLetterStatuses);
       setAttempts(updatedAttempts);
       setCurrentAttempt('');
+      setSelfCurrentAttemptCount(updatedAttempts.length);
+
+      if (activeMatch && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        const targetMatchId = activeMatch.matchId || activeMatch.id;
+        try {
+          socketRef.current.send(JSON.stringify({
+            type: 'player_attempt',
+            matchId: targetMatchId,
+            playerId: profile?.id || auth.currentUser?.uid,
+            attemptCount: updatedAttempts.length,
+            attemptsCount: updatedAttempts.length,
+            attempts: updatedAttempts,
+            word: guess,
+            feedback
+          }));
+        } catch (e) {
+          console.warn('[WebSocket] Error sending player_attempt:', e);
+        }
+      }
 
       // Check if won
       const hasWon = feedback.every((f) => f === 'green');
@@ -3508,6 +3853,7 @@ export default function App() {
           const playerUpdate: any = {
             [`players.${currentAuthUid}.attempts`]: updatedAttempts,
             [`players.${currentAuthUid}.attemptsCount`]: updatedAttempts.length,
+            [`players.${currentAuthUid}.currentAttemptCount`]: updatedAttempts.length,
             [`players.${currentAuthUid}.completed`]: (hasWon || updatedAttempts.length >= 6),
             [`players.${currentAuthUid}.won`]: hasWon,
             [`attempts.${currentAuthUid}`]: updatedAttempts,
@@ -3516,6 +3862,7 @@ export default function App() {
           if (profile?.id && profile.id !== currentAuthUid) {
             playerUpdate[`players.${profile.id}.attempts`] = updatedAttempts;
             playerUpdate[`players.${profile.id}.attemptsCount`] = updatedAttempts.length;
+            playerUpdate[`players.${profile.id}.currentAttemptCount`] = updatedAttempts.length;
             playerUpdate[`players.${profile.id}.completed`] = (hasWon || updatedAttempts.length >= 6);
             playerUpdate[`players.${profile.id}.won`] = hasWon;
             playerUpdate[`attempts.${profile.id}`] = updatedAttempts;
@@ -3799,8 +4146,19 @@ export default function App() {
     const key = String(wordLength);
     currentWordLengthStats[key] = (currentWordLengthStats[key] || 0) + 1;
 
-    // Determine which badges should be unlocked based on new progressive word length stats
+    // Determine which badges should be unlocked based on new progressive word length stats and speed
     const badgesToUnlock = new Set<string>();
+
+    // Speed Solver badges check (timer is 20s total; secondsLeft remaining determines completion speed)
+    if (secondsLeft >= 5) {
+      badgesToUnlock.add('fast_solve_15');
+    }
+    if (secondsLeft >= 10) {
+      badgesToUnlock.add('fast_solve_10');
+    }
+    if (secondsLeft >= 15) {
+      badgesToUnlock.add('fast_solve_5');
+    }
 
     const lengths = [3, 4, 5, 6, 7, 8];
     lengths.forEach(len => {
@@ -4015,27 +4373,27 @@ export default function App() {
   };
 
   // Handle Character keys typed on physical or virtual keyboard
-  const onChar = (char: string) => {
-    const isSelfCompleted = (activeMatch && profile?.id) ? (activeMatch.players[profile.id]?.completed || activeMatch.status === 'ended' || isMatchEnded) : false;
-    const isPlaying = activeMatch ? (activeMatch.status === 'playing' || activeMatch.gameState === 'PLAYING') : (gameStatus === 'playing');
-    if (!isPlaying || isValidating || isSelfCompleted) return;
+  const onChar = useCallback((char: string) => {
+    const isSelfCompleted = (activeMatchRef.current && profile?.id) ? (activeMatchRef.current.players[profile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
+    const isPlaying = activeMatchRef.current ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
+    if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
     const normalized = turkishUpper(char);
-    if (currentAttempt.length < wordLength && /^[A-ZÇĞİÖŞÜ]$/i.test(normalized)) {
+    if (currentAttemptRef.current.length < wordLengthRef.current && /^[A-ZÇĞİÖŞÜ]$/i.test(normalized)) {
       setCurrentAttempt((prev) => prev + normalized);
       playClickSound(settings.soundEnabled);
     }
-  };
+  }, [profile?.id, settings.soundEnabled]);
 
   // Handle Backspace
-  const onDelete = () => {
-    const isSelfCompleted = (activeMatch && profile?.id) ? (activeMatch.players[profile.id]?.completed || activeMatch.status === 'ended' || isMatchEnded) : false;
-    const isPlaying = activeMatch ? (activeMatch.status === 'playing' || activeMatch.gameState === 'PLAYING') : (gameStatus === 'playing');
-    if (!isPlaying || isValidating || isSelfCompleted) return;
-    if (currentAttempt.length > 0) {
+  const onDelete = useCallback(() => {
+    const isSelfCompleted = (activeMatchRef.current && profile?.id) ? (activeMatchRef.current.players[profile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
+    const isPlaying = activeMatchRef.current ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
+    if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
+    if (currentAttemptRef.current.length > 0) {
       playDeleteSound(settings.soundEnabled);
     }
     setCurrentAttempt((prev) => prev.slice(0, -1));
-  };
+  }, [profile?.id, settings.soundEnabled]);
 
   // References to keep the physical keyboard listener persistent and prevent listener duplication/conflicts
   const currentAttemptRef = useRef(currentAttempt);
@@ -4157,6 +4515,12 @@ export default function App() {
       return;
     }
 
+    const isOpponentOnline = Boolean(
+      player.isOnline === true ||
+      (player.lastSeen && (Date.now() - (typeof player.lastSeen === 'number' ? player.lastSeen : new Date(player.lastSeen).getTime()) < 180000)) ||
+      (lobbyPlayers && Array.isArray(lobbyPlayers) && lobbyPlayers.some((lp: any) => String(lp.id) === String(player.id)))
+    );
+
     const challengeId = 'chal_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
     const challengeData = {
       id: challengeId,
@@ -4175,6 +4539,23 @@ export default function App() {
       // 1. Write challenge document to Firestore
       await setDoc(doc(db, 'challenges', challengeId), challengeData);
 
+      // Save notification to target user's notifications subcollection
+      try {
+        await setDoc(doc(db, 'users', player.id, 'notifications', challengeId), {
+          id: challengeId,
+          type: 'challenge',
+          challengerId: profile.id,
+          challengerName: profile.name || 'Savaşçı',
+          challengerAvatar: profile.avatarUrl || '🧠',
+          wordLength: length,
+          status: 'pending',
+          read: false,
+          createdAt: new Date().toISOString()
+        });
+      } catch (err) {
+        console.warn('Error saving notification doc:', err);
+      }
+
       // 2. Send via WebSocket if connected
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({
@@ -4183,7 +4564,7 @@ export default function App() {
         }));
       }
 
-      // 3. Trigger FCM Push Notification
+      // 3. Trigger FCM Push Notification (informing backend if opponent is offline)
       fetch(getApiUrl('/api/send-challenge-notification'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4191,11 +4572,16 @@ export default function App() {
           challengedId: player.id,
           challengerName: profile.name || 'Bir arkadaşın',
           wordLength: length,
-          challengeId
+          challengeId,
+          isOffline: !isOpponentOnline
         })
       }).catch(() => {});
 
-      showToast(`⚔️ ${player.name} oyuncusuna meydan okundu! Yanıt bekleniyor...`, 'info');
+      if (!isOpponentOnline) {
+        showToast(`📲 ${player.name || 'Oyuncu'} şu an oyunda değil. Meydan okuma bildirimi gönderildi! 🔔`, 'info');
+      } else {
+        showToast(`⚔️ ${player.name || 'Oyuncu'} oyuncusuna meydan okundu! Yanıt bekleniyor...`, 'info');
+      }
     } catch (err) {
       console.error('[Challenge Error]:', err);
       showToast('Meydan okuma gönderilemedi.', 'error');
@@ -4266,15 +4652,21 @@ export default function App() {
 
       setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
 
+      isMatchEndedRef.current = false;
+      if (matchId) handledMatchEndIdsRef.current.delete(matchId);
+
       setTargetWord(correctWord);
       setWordLength(targetLength);
       setAttempts([]);
       setCurrentAttempt('');
       setLetterStatuses({});
+      setHasEnteredGame(true);
       setMatchmakingStatus('idle');
       setIsMatchmakingLocked(false);
       setOpponentLeftDuringMatch(false);
       setShowCongratsModal(false);
+      setRematchRequested(false);
+      setOpponentRematchRequested(false);
 
       const { player1: p1, player2: p2, players: parsedPlayers } = resolveDuelPlayers(
         initialFirestoreMatch.player1,
@@ -4283,11 +4675,22 @@ export default function App() {
         initialFirestoreMatch.players
       );
 
+      const cleanPlayers = { ...parsedPlayers };
+      Object.keys(cleanPlayers).forEach((k) => {
+        cleanPlayers[k] = { ...cleanPlayers[k], attempts: [], completed: false, won: false, isWinner: false };
+      });
+
       setActiveMatch({
         ...initialFirestoreMatch,
+        isGameOver: false,
+        gameOver: false,
+        winner: null,
+        winnerId: null,
+        winnerUserId: null,
+        winReason: null,
         player1: p1,
         player2: p2,
-        players: parsedPlayers
+        players: cleanPlayers
       });
 
       showToast('Meydan okuma kabul edildi! Düello hazırlanıyor...', 'success');
@@ -4314,13 +4717,29 @@ export default function App() {
   };
 
   const handleLeaveMatch = async () => {
-    if (activeMatch && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({
-        type: 'leave_match',
-        matchId: activeMatch.id
-      }));
+    if (activeMatch && !isMatchEndedRef.current && (activeMatch.status === 'playing' || activeMatch.gameState === 'PLAYING' || gameStatus === 'playing')) {
+      showConfirm(
+        'Düellodan Çık',
+        'Düellodan çıkmak istediğinize emin misiniz? Çıkarsanız rakibiniz oyunu kazanacaktır.',
+        async () => {
+          if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              type: 'leave_match',
+              matchId: activeMatch.id || activeMatch.matchId
+            }));
+          }
+          await handleLeaveMatchToMenu();
+        }
+      );
+    } else {
+      if (activeMatch && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: 'leave_match',
+          matchId: activeMatch.id || activeMatch.matchId
+        }));
+      }
+      await handleLeaveMatchToMenu();
     }
-    await handleLeaveMatchToMenu();
   };
 
 
@@ -4387,10 +4806,12 @@ export default function App() {
       }
     }
 
-    const targetLen = Number(matchWordsCount || duelWordLength || 5);
-    if (matchWordsCount && matchWordsCount !== duelWordLength) {
-      setDuelWordLength(targetLen);
-    }
+    const targetLen = Math.max(3, Math.min(10, parseInt(String(matchWordsCount || duelWordLength || 5), 10) || 5));
+    setDuelWordLength(targetLen);
+    setWordLength(targetLen);
+    duelWordLengthRef.current = targetLen;
+
+    const queueCollectionName = 'matchmaking_queue_' + targetLen;
 
     // Send WebSocket join if available
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -4414,9 +4835,9 @@ export default function App() {
       setReconnectCounter((prev) => prev + 1);
     }
 
-    // Firestore Real-time Matchmaking Queue
+    // Firestore Real-time Matchmaking Queue (strictly isolated by word length)
     try {
-      const myQueueRef = doc(db, 'matchmaking_queue', currentUid);
+      const myQueueRef = doc(db, queueCollectionName, currentUid);
       const queueData = {
         id: currentUid,
         playerId: currentUid,
@@ -4425,7 +4846,7 @@ export default function App() {
         username: selfName,
         displayName: selfName,
         avatarUrl: selfAvatar,
-        wordLength: Number(targetLen),
+        wordLength: targetLen,
         status: 'waiting',
         createdAt: serverTimestamp(),
         updatedAt: new Date().toISOString()
@@ -4464,6 +4885,8 @@ export default function App() {
             });
             setTargetWord(word);
             setWordLength(matchLen);
+            setDuelWordLength(matchLen);
+            duelWordLengthRef.current = matchLen;
             setAttempts([]);
             setCurrentAttempt('');
             setLetterStatuses({});
@@ -4482,19 +4905,22 @@ export default function App() {
         console.warn("[Firestore Queue Listener] Snapshot stream notification:", error?.message || error);
       });
 
-      // Search Firestore queue for waiting opponents
-      const q = query(
-        collection(db, 'matchmaking_queue'),
-        where('wordLength', '==', targetLen),
-        where('status', '==', 'waiting')
-      );
+      // Search Firestore queue for waiting opponents in the isolated word length collection
+      let querySnap;
+      try {
+        const qStrict = query(
+          collection(db, queueCollectionName),
+          where('status', '==', 'waiting')
+        );
+        querySnap = await getDocs(qStrict);
+      } catch (err) {
+        console.warn("[Firestore Queue Search Notice]:", err);
+      }
 
-      const querySnap = await getDocs(q);
-      const waitingDocs = querySnap.docs.filter(d => {
+      const waitingDocs = querySnap ? querySnap.docs.filter(d => {
         if (d.id === currentUid || (profile?.id && d.id === profile.id)) return false;
-        const dData = d.data();
-        return Number(dData.wordLength) === Number(targetLen);
-      });
+        return true;
+      }) : [];
 
       if (waitingDocs.length > 0) {
         const oppDoc = waitingDocs[0];
@@ -4505,7 +4931,7 @@ export default function App() {
         const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
         const word = turkishUpper(getRandomWord(targetLen, true));
 
-        console.log(`[Firestore Matchmaking] Match found in queue! Opponent: ${oppName}. Creating match ${matchId} with word ${word}`);
+        console.log(`[Firestore Matchmaking] Match found in queue (${targetLen} letters)! Opponent: ${oppName}. Creating match ${matchId} with word ${word}`);
 
         const matchPayload = {
           id: matchId,
@@ -4530,8 +4956,8 @@ export default function App() {
         await setDoc(doc(db, 'matches', matchId), matchPayload);
         await setDoc(doc(db, 'rooms', matchId), matchPayload);
 
-        // Notify opponent via their queue document
-        await setDoc(doc(db, 'matchmaking_queue', oppId), {
+        // Notify opponent via their queue document in the same isolated queue collection
+        await setDoc(doc(db, queueCollectionName, oppId), {
           status: 'matched',
           matchId,
           correctWord: word,
@@ -4690,6 +5116,24 @@ export default function App() {
     if (avatarUrl) setAvatarInput(avatarUrl);
     showToast('Profiliniz güncellendi.', 'success');
   };
+
+  const handleUpdateFriends = useCallback((newFriends: string[]) => {
+    setProfile(prev => {
+      if (!prev) return prev;
+      const current = prev.friends || [];
+      if (current.length === newFriends.length && current.every((f, i) => f === newFriends[i])) {
+        return prev;
+      }
+      const updated = {
+        ...prev,
+        friends: newFriends
+      };
+      saveUserProfileToFirestore(updated).catch((err) => {
+        console.warn('Non-blocking friends save during handleUpdateFriends failed:', err);
+      });
+      return updated;
+    });
+  }, []);
 
   const getBgThemeClass = () => {
     switch (settings.bgTheme) {
@@ -4856,18 +5300,7 @@ export default function App() {
           <WelcomeScreen
             profile={profile}
             onUpdateProfile={handleUpdateProfile}
-            onUpdateFriends={(newFriends: string[]) => {
-              setTimeout(async () => {
-                setProfile(prev => {
-                  const updated = {
-                    ...prev,
-                    friends: newFriends
-                  };
-                  saveUserProfileToFirestore(updated).catch(err => console.warn('Non-blocking friends update save failed:', err));
-                  return updated;
-                });
-              }, 0);
-            }}
+            onUpdateFriends={handleUpdateFriends}
             dictionaryMode={dictionaryMode}
             onChangeDictionaryMode={setDictionaryMode}
             gameMode={gameMode}
@@ -5029,7 +5462,7 @@ export default function App() {
             {/* Canlı Düello Kompakt Skor Tahtası (Live Duel Scoreboard) */}
         {activeMatch && (
           (() => {
-            const currentAuthUid = auth.currentUser?.uid;
+            const currentAuthUid = auth.currentUser?.uid || profile?.id || '';
             const selfId = currentAuthUid || profile?.id || '';
             const activeProfile = profile ? { ...profile, id: selfId } : { id: selfId, name: 'Sen' };
             const resolved = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, activeProfile, activeMatch.players);
@@ -5037,50 +5470,23 @@ export default function App() {
             const p1 = resolved.player1;
             const p2 = resolved.player2;
 
-            const p1IsSelf = (p1.id === selfId || p1.uid === selfId || (profile?.id && p1.id === profile.id) || (profile?.id && p1.uid === profile.id));
+            const p1IsSelf = checkIsSelfPlayer(p1, currentAuthUid, profile?.id);
             const selfPlayer = p1IsSelf ? p1 : p2;
             const oppPlayer = p1IsSelf ? p2 : p1;
 
             const oppId = oppPlayer?.id || oppPlayer?.uid || 'opponent';
             const selfKey = selfPlayer?.id || selfPlayer?.uid || selfId;
 
-            const selfState = activeMatch.players?.[selfKey] || (profile?.id ? activeMatch.players?.[profile.id] : {}) || activeMatch.players?.[selfId] || {};
-            const oppKeys = [oppPlayer?.id, oppPlayer?.uid, oppPlayer?.profileId, oppId, 'p2', 'p1'].filter(Boolean);
-            let oppState: any = {};
-            for (const k of oppKeys) {
-              if (activeMatch.players?.[k] && Object.keys(activeMatch.players[k]).length > 0) {
-                oppState = activeMatch.players[k];
-                break;
-              }
-            }
-
             let oppDisplayName = oppPlayer?.name || oppPlayer?.username || oppPlayer?.displayName || '';
             if (!oppDisplayName || oppDisplayName === 'Oyuncu 1' || oppDisplayName === 'Oyuncu 2' || oppDisplayName === 'Oyuncu') {
               oppDisplayName = (oppId && oppId !== 'opponent') ? 'Misafir_' + oppId.substring(0, 5) : 'Rakip';
             }
 
-            const selfAttemptCount = attempts.length;
-            let oppAttempts: any[] = [];
-            let oppAttemptCount = 0;
-            for (const k of oppKeys) {
-              const atts = activeMatch.attempts?.[k] || activeMatch.players?.[k]?.attempts;
-              if (Array.isArray(atts) && atts.length > oppAttempts.length) {
-                oppAttempts = atts;
-              }
-              const count = activeMatch.players?.[k]?.attemptsCount || (Array.isArray(atts) ? atts.length : 0);
-              if (count > oppAttemptCount) {
-                oppAttemptCount = count;
-              }
-            }
-            if (oppAttempts.length > oppAttemptCount) {
-              oppAttemptCount = oppAttempts.length;
-            }
+            const selfData = getPlayerAttemptData(activeMatch, true, currentAuthUid, profile?.id || '', attempts, selfCurrentAttemptCount);
+            const oppData = getPlayerAttemptData(activeMatch, false, currentAuthUid, profile?.id || '', [], oppCurrentAttemptCount);
 
-            const selfScore = selfState.score ?? activeMatch.scores?.[selfKey] ?? activeMatch.scores?.[profile.id] ?? 0;
-            const oppScore = oppState.score ?? activeMatch.scores?.[oppId] ?? 0;
-
-            const selfCompleted = selfState.completed || gameStatus === 'won' || gameStatus === 'lost';
-            const oppCompleted = oppState.completed;
+            const selfScore = activeMatch.scores?.[selfKey] ?? activeMatch.scores?.[profile?.id || ''] ?? 0;
+            const oppScore = activeMatch.scores?.[oppId] ?? 0;
 
             return (
               <div className="w-full max-w-md md:max-w-[90%] lg:max-w-[85%] xl:max-w-[1000px] mx-auto bg-slate-900/95 backdrop-blur-md border border-amber-500/30 rounded-2xl p-2.5 sm:p-3 mb-2.5 shadow-2xl text-white relative overflow-hidden" id="canli-duello-skor-tahtasi">
@@ -5104,68 +5510,21 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Düşük Gecikme Modu (Low Latency Mode) Status Badge */}
-                    {((settings.lowLatencyMode ?? true) || (wsLatency !== null && wsLatency > 150)) && (
-                      <div 
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[9.5px] font-mono text-amber-300 select-none shadow-sm transition-all"
-                        title="Düşük Gecikme Modu (Otomatik 350ms Polling Eşitlemesi & Hızlı WebSocket Ping)"
-                      >
-                        <Zap size={11} className="text-amber-400 shrink-0 fill-amber-400/30 animate-pulse" />
-                        <span className="font-extrabold tracking-tight hidden sm:inline">DÜŞÜK GECİKME</span>
-                        <span className="text-[8.5px] font-bold text-amber-200 bg-amber-500/40 px-1 py-0.2 rounded font-mono">
-                          350ms
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Real-time WebSocket Signal Strength Icon & Latency Indicator */}
+                    {/* Minimal, uncluttered connection indicator dot */}
                     <div 
-                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-black/50 border border-white/10 text-[10px] font-mono select-none transition-all duration-300"
-                      title={!isOnline ? "Sunucu Bağlantısı Kesildi" : wsLatency !== null ? `Canlı Sunucu Gecikmesi: ${wsLatency} ms (${wsLatency < 80 ? 'Mükemmel' : wsLatency < 180 ? 'İyi' : wsLatency < 350 ? 'Orta' : 'Yüksek Gecikme'})` : "Gecikme Ölçülüyor..."}
+                      onClick={handleManualReconnect}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold select-none transition-all cursor-pointer ${
+                        isOnline 
+                          ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' 
+                          : 'bg-rose-500/20 border border-rose-500/40 text-rose-300 animate-pulse'
+                      }`}
+                      title={isOnline ? "Sunucu Bağlantısı Aktif" : "İnternet Kopuk! Yeniden bağlanmak için tıklayın."}
                     >
-                      {/* Signal Strength 4-Bar Icon */}
-                      <div className="flex items-end gap-[2px] h-3 w-3.5 pb-[1px]">
-                        {[1, 2, 3, 4].map((bar) => {
-                          let activeBars = 0;
-                          let barBg = 'bg-emerald-400';
-                          if (!isOnline) {
-                            activeBars = 0;
-                          } else if (wsLatency === null) {
-                            activeBars = 1;
-                            barBg = 'bg-amber-400';
-                          } else if (wsLatency < 80) {
-                            activeBars = 4;
-                            barBg = 'bg-emerald-400';
-                          } else if (wsLatency < 180) {
-                            activeBars = 3;
-                            barBg = 'bg-emerald-400';
-                          } else if (wsLatency < 350) {
-                            activeBars = 2;
-                            barBg = 'bg-amber-400';
-                          } else {
-                            activeBars = 1;
-                            barBg = 'bg-rose-400';
-                          }
-
-                          const isLit = bar <= activeBars;
-                          const heights = ['h-[30%]', 'h-[52%]', 'h-[76%]', 'h-[100%]'];
-                          return (
-                            <span
-                              key={bar}
-                              className={`w-[2.5px] rounded-xs transition-all duration-300 ${heights[bar - 1]} ${
-                                isLit ? barBg : 'bg-white/20'
-                              }`}
-                            />
-                          );
-                        })}
-                      </div>
-
-                      {/* Latency MS Value */}
-                      <span className={`font-bold text-[9.5px] font-mono tracking-tight ${
-                        !isOnline ? 'text-rose-400' : wsLatency === null ? 'text-amber-400 font-normal' : wsLatency < 180 ? 'text-emerald-400' : wsLatency < 350 ? 'text-amber-400' : 'text-rose-400'
-                      }`}>
-                        {!isOnline ? 'Offline' : wsLatency !== null ? `${wsLatency} ms` : '...'}
+                      <span className="relative flex h-2 w-2">
+                        <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isOnline ? 'bg-emerald-400' : 'bg-rose-400'}`}></span>
+                        <span className={`relative inline-flex rounded-full h-2 w-2 ${isOnline ? 'bg-emerald-500' : 'bg-rose-500'}`}></span>
                       </span>
+                      <span>{isOnline ? 'CANLI' : 'ÇEVRİMDIŞI'}</span>
                     </div>
 
                     <button
@@ -5203,11 +5562,11 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Attempt Tracker Dots & Label */}
+                    {/* Attempt Tracker Dots & Label for Self */}
                     <ProgressDots
-                      currentAttemptCount={selfCurrentAttemptCount}
-                      isCompleted={selfCompleted}
-                      isWon={selfState.won}
+                      currentAttemptCount={selfData.count}
+                      isCompleted={selfData.isCompleted}
+                      isWon={selfData.isWon}
                       colorScheme="emerald"
                     />
                   </div>
@@ -5241,11 +5600,11 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Attempt Tracker Dots & Label */}
+                    {/* Attempt Tracker Dots & Label for Opponent */}
                     <ProgressDots
-                      currentAttemptCount={Math.max(oppCurrentAttemptCount, oppAttemptCount)}
-                      isCompleted={oppCompleted}
-                      isWon={oppState.won}
+                      currentAttemptCount={oppData.count}
+                      isCompleted={oppData.isCompleted}
+                      isWon={oppData.isWon}
                       colorScheme="amber"
                     />
                   </div>
@@ -5674,7 +6033,7 @@ export default function App() {
                     <div className="bg-black/25 rounded-2xl border border-white/5 p-3 mb-2 space-y-1.5 shrink-0">
                       <h4 className="text-[9px] font-black text-amber-300/80 tracking-widest uppercase font-mono text-left font-bold">OYUNCU DETAYLARI</h4>
                       {(() => {
-                        const currentAuthUid = auth.currentUser?.uid;
+                        const currentAuthUid = auth.currentUser?.uid || profile?.id || '';
                         const selfId = currentAuthUid || profile?.id || '';
                         const activeProfile = profile ? { ...profile, id: selfId } : { id: selfId, name: 'Sen' };
                         const { player1: resolvedP1, player2: resolvedP2 } = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, activeProfile, activeMatch.players);
@@ -5682,7 +6041,7 @@ export default function App() {
 
                         return duelPlayers.map((p: any, index: number) => {
                           const pId = p.id || p.uid || (index === 0 ? 'p1' : 'p2');
-                          const isSelf = pId === selfId || (profile?.id && pId === profile.id) || p.id === selfId || p.uid === selfId || (profile?.id && (p.id === profile.id || p.uid === profile.id));
+                          const isSelf = checkIsSelfPlayer(p, currentAuthUid, profile?.id);
 
                           // Determine clean display name
                           let displayName = '';
@@ -5692,30 +6051,19 @@ export default function App() {
                             displayName = p.name || p.username || p.displayName || 'Rakip';
                           }
 
-                          // Determine attempts and attemptCount
-                          const candKeys = [pId, p.id, p.uid, p.profileId, (index === 0 ? 'p1' : 'p2')].filter(Boolean);
-                          let pAttempts: any[] = [];
-                          let pAttemptsCount = 0;
+                          const pData = getPlayerAttemptData(
+                            activeMatch,
+                            isSelf,
+                            currentAuthUid,
+                            profile?.id || '',
+                            isSelf ? attempts : [],
+                            isSelf ? selfCurrentAttemptCount : oppCurrentAttemptCount
+                          );
 
-                          for (const k of candKeys) {
-                            const atts = activeMatch.attempts?.[k] || activeMatch.players?.[k]?.attempts;
-                            if (Array.isArray(atts) && atts.length > pAttempts.length) {
-                              pAttempts = atts;
-                            }
-                            const cnt = activeMatch.players?.[k]?.attemptsCount || (Array.isArray(atts) ? atts.length : 0);
-                            if (cnt > pAttemptsCount) {
-                              pAttemptsCount = cnt;
-                            }
-                          }
-
-                          if (isSelf && attempts.length > pAttempts.length) {
-                            pAttempts = attempts;
-                          }
-
-                          const attemptCount = Math.max(pAttempts.length, pAttemptsCount);
+                          const attemptCount = pData.count;
 
                           // Determine win status
-                          const isWonPlayer = Boolean(
+                          const isWonPlayer = pData.isWon || Boolean(
                             serverWinnerId &&
                             serverWinnerId !== 'draw' &&
                             (pId === serverWinnerId || (isSelf && isWinner))
@@ -5756,6 +6104,38 @@ export default function App() {
 
               {/* Buttons Block */}
               <div className="space-y-2 mt-auto shrink-0 pt-1">
+                {(() => {
+                  const currentAuthUid = auth.currentUser?.uid;
+                  const selfId = currentAuthUid || profile?.id || '';
+                  const activeProfile = profile ? { ...profile, id: selfId } : { id: selfId, name: 'Sen' };
+                  const { player1: resolvedP1, player2: resolvedP2 } = resolveDuelPlayers(activeMatch.player1, activeMatch.player2, activeProfile, activeMatch.players);
+                  const opponentPlayer = [resolvedP1, resolvedP2].find(
+                    (p: any) => p && p.id && p.id !== selfId && (!profile?.id || p.id !== profile.id)
+                  ) || (resolvedP1?.id && resolvedP1.id !== selfId ? resolvedP1 : resolvedP2);
+
+                  return opponentPlayer && opponentPlayer.id ? (
+                    <button
+                      onClick={async () => {
+                        if (rematchRequested) return;
+                        playClickSound(settings.soundEnabled);
+                        setRematchRequested(true);
+                        const targetLength = activeMatch.wordLength || wordLength || 5;
+                        await handleChallengePlayer(opponentPlayer, targetLength);
+                      }}
+                      disabled={rematchRequested}
+                      className={`w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-lg flex items-center justify-center gap-2 border border-amber-400/50 cursor-pointer ${
+                        rematchRequested
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 cursor-not-allowed opacity-80'
+                          : 'bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 hover:from-amber-600 hover:to-yellow-600 active:scale-[0.98] text-slate-950 shadow-amber-500/20'
+                      }`}
+                      id="match-rematch-btn"
+                    >
+                      <Swords size={16} className={`stroke-[2.5] ${rematchRequested ? 'animate-spin' : ''}`} />
+                      <span>{rematchRequested ? 'RÖVANŞ İSTEĞİ GÖNDERİLDİ ⏳' : 'RÖVANŞ İSTE'}</span>
+                    </button>
+                  ) : null;
+                })()}
+
                 {/* Main Home Button */}
                 <button
                   onClick={() => {
@@ -6150,12 +6530,7 @@ export default function App() {
         <FriendsModal
           profile={profile}
           onClose={() => setShowFriendsModal(false)}
-          onUpdateFriends={(newFriends: string[]) => {
-            setProfile(prev => ({
-              ...prev,
-              friends: newFriends
-            }));
-          }}
+          onUpdateFriends={handleUpdateFriends}
           isOnline={isOnline}
           lobbyPlayers={lobbyPlayers}
           onChallengePlayer={(player, wLen) => {
@@ -6183,6 +6558,21 @@ export default function App() {
           onReconnect={handleManualReconnect}
           onSignOut={handleSignOut}
         />
+      )}
+
+      {/* Offline Red Dot Floating Indicator */}
+      {!isOnline && (
+        <div 
+          onClick={handleManualReconnect}
+          className="fixed top-3 right-3 z-[200] flex items-center gap-2 bg-rose-950/95 border border-rose-500/60 text-rose-200 px-3 py-1.5 rounded-full text-xs font-black shadow-2xl animate-pulse backdrop-blur-md cursor-pointer hover:bg-rose-900 transition active:scale-95"
+          title="İnternet bağlantısı koptu. Yeniden bağlanmak için tıklayın."
+        >
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500"></span>
+          </span>
+          <span>İnternet Kopuk</span>
+        </div>
       )}
 
       {/* Badge Unlocked Popup Animation */}

@@ -94,10 +94,21 @@ export default function FriendsModal({
     return false;
   };
 
+  // Refs to avoid unnecessary re-creation of callbacks and infinite loops
+  const onUpdateFriendsRef = React.useRef(onUpdateFriends);
+  useEffect(() => {
+    onUpdateFriendsRef.current = onUpdateFriends;
+  }, [onUpdateFriends]);
+
+  const profileFriendsRef = React.useRef(profile?.friends || []);
+  useEffect(() => {
+    profileFriendsRef.current = profile?.friends || [];
+  }, [profile?.friends]);
+
   // Load and synchronize friends & requests from Firestore
   const refreshFriends = useCallback(async (isSilent = false) => {
     if (!profile?.id) return;
-    if (!isSilent) setLoading(true);
+    if (!isSilent && confirmedFriends.length === 0) setLoading(true);
     setRefreshing(true);
 
     try {
@@ -106,7 +117,14 @@ export default function FriendsModal({
       setIncomingRequests(data.incomingRequests || []);
 
       if (data.updatedFriendsArray && Array.isArray(data.updatedFriendsArray)) {
-        onUpdateFriends(data.updatedFriendsArray);
+        const current = profileFriendsRef.current;
+        const isDifferent =
+          data.updatedFriendsArray.length !== current.length ||
+          data.updatedFriendsArray.some((id, idx) => id !== current[idx]);
+
+        if (isDifferent && onUpdateFriendsRef.current) {
+          onUpdateFriendsRef.current(data.updatedFriendsArray);
+        }
       }
     } catch (err) {
       console.warn('Error fetching friends list:', err);
@@ -114,11 +132,11 @@ export default function FriendsModal({
       setLoading(false);
       setRefreshing(false);
     }
-  }, [profile, onUpdateFriends]);
+  }, [profile?.id, confirmedFriends.length]);
 
   useEffect(() => {
-    refreshFriends();
-  }, [refreshFriends]);
+    refreshFriends(false);
+  }, [profile?.id]);
 
   // Execute search by ID or Username
   const handleSearch = async () => {
@@ -237,7 +255,14 @@ export default function FriendsModal({
             <div>
               <h3 className="text-base font-black text-amber-300 tracking-wide uppercase flex items-center gap-2">
                 Arkadaş Listesi
-                {refreshing && <RefreshCw size={13} className="animate-spin text-amber-400" />}
+                <button
+                  type="button"
+                  onClick={() => refreshFriends(true)}
+                  className="hover:opacity-80 transition cursor-pointer p-0.5 rounded"
+                  title="Yenile"
+                >
+                  <RefreshCw size={13} className={`text-amber-400 ${refreshing ? 'animate-spin' : ''}`} />
+                </button>
               </h3>
               <p className="text-[11px] text-slate-400">Arkadaş ekle, davet et ve çevrimiçi durumlarını gör</p>
             </div>
