@@ -23,7 +23,6 @@ import FriendsModal from './components/FriendsModal';
 import SettingsModal, { AppSettings } from './components/SettingsModal';
 import AuthScreen from './components/AuthScreen';
 import BadgeUnlockedModal from './components/BadgeUnlockedModal';
-import ProgressDots from './components/ProgressDots';
 import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry } from './types';
@@ -353,11 +352,10 @@ const getPlayerAttemptData = (
   isSelf: boolean,
   currentUid: string,
   profileId: string = '',
-  localAttempts: any[] = [],
-  fallbackCountState: number = 0
+  localAttempts: any[] = []
 ) => {
   let attemptsArray: any[] = isSelf ? [...localAttempts] : [];
-  let maxCount = isSelf ? localAttempts.length : fallbackCountState;
+  let maxCount = isSelf ? localAttempts.length : 0;
   let isWon = false;
   let isCompleted = false;
 
@@ -1377,7 +1375,6 @@ export default function App() {
   const [showLobbyModal, setShowLobbyModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [showFriendsModal, setShowFriendsModal] = useState<boolean>(false);
-  const [showWordHistoryModal, setShowWordHistoryModal] = useState<boolean>(false);
   const [showCongratsModal, setShowCongratsModal] = useState<boolean>(false);
   const handledMatchEndIdsRef = useRef<Set<string>>(new Set());
   const [opponentLeftDuringMatch, setOpponentLeftDuringMatch] = useState<boolean>(false);
@@ -1443,35 +1440,7 @@ export default function App() {
   const [rematchRequested, setRematchRequested] = useState<boolean>(false);
   const [opponentRematchRequested, setOpponentRematchRequested] = useState<boolean>(false);
 
-  const [selfCurrentAttemptCount, setSelfCurrentAttemptCount] = useState<number>(0);
-  const [oppCurrentAttemptCount, setOppCurrentAttemptCount] = useState<number>(0);
-
   const currentMatchId = activeMatch?.id || activeMatch?.matchId;
-  const prevMatchIdForAttemptsRef = useRef<string | null>(null);
-
-  // Read currentAttemptCount from Firestore's players object and pass to ProgressDots props
-  useEffect(() => {
-    if (!activeMatch) {
-      setSelfCurrentAttemptCount(attempts.length);
-      setOppCurrentAttemptCount(0);
-      prevMatchIdForAttemptsRef.current = null;
-      return;
-    }
-
-    if (prevMatchIdForAttemptsRef.current !== currentMatchId) {
-      prevMatchIdForAttemptsRef.current = currentMatchId;
-      setOppCurrentAttemptCount(0);
-    }
-
-    const currentAuthUid = auth.currentUser?.uid || profile?.id || '';
-    const profileId = profile?.id || '';
-
-    const selfData = getPlayerAttemptData(activeMatch, true, currentAuthUid, profileId, attempts, selfCurrentAttemptCount);
-    const oppData = getPlayerAttemptData(activeMatch, false, currentAuthUid, profileId, [], oppCurrentAttemptCount);
-
-    setSelfCurrentAttemptCount(selfData.count);
-    setOppCurrentAttemptCount((prev) => Math.max(prev, oppData.count));
-  }, [activeMatch, activeMatch?.players, activeMatch?.attempts, attempts.length, profile?.id, currentMatchId]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const wasOnlineRef = useRef<boolean>(false);
@@ -2177,8 +2146,6 @@ export default function App() {
 
               const targetCount = Number(data.attemptCount) || 1;
               showToast(`Rakip bir tahmin yaptı! (${targetCount}. deneme)`, 'info');
-
-              setOppCurrentAttemptCount((prev) => Math.max(prev, targetCount));
 
               setActiveMatch((prev: any) => {
                 if (!prev) return null;
@@ -3394,8 +3361,6 @@ export default function App() {
     setRematchRequested(false);
     setOpponentRematchRequested(false);
     pendingMatchmakingRef.current = null;
-    setSelfCurrentAttemptCount(0);
-    setOppCurrentAttemptCount(0);
 
     // WebSocket cleanup and reconnection block
     if (socketRef.current) {
@@ -3800,25 +3765,6 @@ export default function App() {
       setLetterStatuses(newLetterStatuses);
       setAttempts(updatedAttempts);
       setCurrentAttempt('');
-      setSelfCurrentAttemptCount(updatedAttempts.length);
-
-      if (activeMatch && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        const targetMatchId = activeMatch.matchId || activeMatch.id;
-        try {
-          socketRef.current.send(JSON.stringify({
-            type: 'player_attempt',
-            matchId: targetMatchId,
-            playerId: profile?.id || auth.currentUser?.uid,
-            attemptCount: updatedAttempts.length,
-            attemptsCount: updatedAttempts.length,
-            attempts: updatedAttempts,
-            word: guess,
-            feedback
-          }));
-        } catch (e) {
-          console.warn('[WebSocket] Error sending player_attempt:', e);
-        }
-      }
 
       // Check if won
       const hasWon = feedback.every((f) => f === 'green');
@@ -4853,6 +4799,8 @@ export default function App() {
       };
 
       await setDoc(myQueueRef, queueData);
+      // Also write to general matchmaking_queue with explicit wordLength for strict cross-system tracking
+      setDoc(doc(db, 'matchmaking_queue', currentUid), queueData).catch(() => {});
 
       // Listen to our queue document for matchmaking results
       queueUnsubscribeRef.current = onSnapshot(myQueueRef, (snap) => {
@@ -4919,6 +4867,9 @@ export default function App() {
 
       const waitingDocs = querySnap ? querySnap.docs.filter(d => {
         if (d.id === currentUid || (profile?.id && d.id === profile.id)) return false;
+        const dData = d.data();
+        // Strict wordLength preference check: enforce exact wordLength equality
+        if (dData.wordLength && Number(dData.wordLength) !== targetLen) return false;
         return true;
       }) : [];
 
@@ -5482,9 +5433,6 @@ export default function App() {
               oppDisplayName = (oppId && oppId !== 'opponent') ? 'Misafir_' + oppId.substring(0, 5) : 'Rakip';
             }
 
-            const selfData = getPlayerAttemptData(activeMatch, true, currentAuthUid, profile?.id || '', attempts, selfCurrentAttemptCount);
-            const oppData = getPlayerAttemptData(activeMatch, false, currentAuthUid, profile?.id || '', [], oppCurrentAttemptCount);
-
             const selfScore = activeMatch.scores?.[selfKey] ?? activeMatch.scores?.[profile?.id || ''] ?? 0;
             const oppScore = activeMatch.scores?.[oppId] ?? 0;
 
@@ -5541,34 +5489,24 @@ export default function App() {
                 {/* Scoreboard Players Grid */}
                 <div className="grid grid-cols-11 items-center gap-1 sm:gap-2">
                   {/* Player 1: SEN */}
-                  <div className="col-span-5 bg-black/40 border border-emerald-500/30 rounded-xl p-2 flex flex-col justify-between">
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden">
-                          {profile?.avatarUrl ? (
-                            <img src={profile?.avatarUrl} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            profile?.name?.[0]?.toUpperCase() || 'S'
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <span className="text-[9px] text-emerald-400 font-bold block leading-none font-mono">SEN</span>
-                          <span className="text-xs font-black text-white truncate block leading-tight">{profile?.name || 'Sen'}</span>
-                        </div>
+                  <div className="col-span-5 bg-black/40 border border-emerald-500/30 rounded-xl p-2 flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden">
+                        {profile?.avatarUrl ? (
+                          <img src={profile?.avatarUrl} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          profile?.name?.[0]?.toUpperCase() || 'S'
+                        )}
                       </div>
-                      <div className="text-right shrink-0">
-                        <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
-                        <span className="text-xs font-black text-emerald-400 font-mono">{selfScore} P</span>
+                      <div className="min-w-0">
+                        <span className="text-[9px] text-emerald-400 font-bold block leading-none font-mono">SEN</span>
+                        <span className="text-xs font-black text-white truncate block leading-tight">{profile?.name || 'Sen'}</span>
                       </div>
                     </div>
-
-                    {/* Attempt Tracker Dots & Label for Self */}
-                    <ProgressDots
-                      currentAttemptCount={selfData.count}
-                      isCompleted={selfData.isCompleted}
-                      isWon={selfData.isWon}
-                      colorScheme="emerald"
-                    />
+                    <div className="text-right shrink-0">
+                      <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
+                      <span className="text-xs font-black text-emerald-400 font-mono">{selfScore} P</span>
+                    </div>
                   </div>
 
                   {/* Center VS Divider */}
@@ -5579,34 +5517,24 @@ export default function App() {
                   </div>
 
                   {/* Player 2: RAKİP */}
-                  <div className="col-span-5 bg-black/40 border border-amber-500/30 rounded-xl p-2 flex flex-col justify-between">
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-black text-xs text-amber-300 shrink-0 overflow-hidden">
-                          {oppPlayer?.avatarUrl ? (
-                            <img src={oppPlayer.avatarUrl} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            oppDisplayName?.[0]?.toUpperCase() || 'R'
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <span className="text-[9px] text-amber-400 font-bold block leading-none font-mono">RAKİP</span>
-                          <span className="text-xs font-black text-white truncate block leading-tight">{oppDisplayName}</span>
-                        </div>
+                  <div className="col-span-5 bg-black/40 border border-amber-500/30 rounded-xl p-2 flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-black text-xs text-amber-300 shrink-0 overflow-hidden">
+                        {oppPlayer?.avatarUrl ? (
+                          <img src={oppPlayer.avatarUrl} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          oppDisplayName?.[0]?.toUpperCase() || 'R'
+                        )}
                       </div>
-                      <div className="text-right shrink-0">
-                        <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
-                        <span className="text-xs font-black text-amber-400 font-mono">{oppScore} P</span>
+                      <div className="min-w-0">
+                        <span className="text-[9px] text-amber-400 font-bold block leading-none font-mono">RAKİP</span>
+                        <span className="text-xs font-black text-white truncate block leading-tight">{oppDisplayName}</span>
                       </div>
                     </div>
-
-                    {/* Attempt Tracker Dots & Label for Opponent */}
-                    <ProgressDots
-                      currentAttemptCount={oppData.count}
-                      isCompleted={oppData.isCompleted}
-                      isWon={oppData.isWon}
-                      colorScheme="amber"
-                    />
+                    <div className="text-right shrink-0">
+                      <span className="text-[8px] text-gray-400 block leading-none font-mono">SKOR</span>
+                      <span className="text-xs font-black text-amber-400 font-mono">{oppScore} P</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -5652,22 +5580,12 @@ export default function App() {
             <div className="w-full flex justify-between items-center mb-2 px-1 border-b border-[#3E485A]/40 pb-2 relative z-10">
               {gameStatus === 'playing' ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => setShowWordHistoryModal(true)}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800/80 border border-slate-700 hover:border-amber-500/50 transition cursor-pointer active:scale-95 text-left"
-                    title="Kelime Geçmişini İncele"
-                  >
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800/80 border border-slate-700 text-left">
                     <Trophy size={15} className="text-amber-500 shrink-0" />
                     <span className="text-xs font-bold text-gray-200 font-mono">
                       Deneme: {attempts.length}/6
                     </span>
-                    {attempts.length > 0 && (
-                      <span className="text-[8.5px] font-black font-mono px-1.5 py-0.2 bg-amber-500/20 text-amber-300 rounded-full border border-amber-500/30">
-                        Geçmiş 📜
-                      </span>
-                    )}
-                  </button>
+                  </div>
 
                   {/* Shimmering Gold Wallet in playing screen top bar */}
                   <GoldWallet gold={profile?.gold !== undefined ? profile.gold : 20} />
@@ -6056,8 +5974,7 @@ export default function App() {
                             isSelf,
                             currentAuthUid,
                             profile?.id || '',
-                            isSelf ? attempts : [],
-                            isSelf ? selfCurrentAttemptCount : oppCurrentAttemptCount
+                            isSelf ? attempts : []
                           );
 
                           const attemptCount = pData.count;
@@ -6104,6 +6021,23 @@ export default function App() {
 
               {/* Buttons Block */}
               <div className="space-y-2 mt-auto shrink-0 pt-1">
+                {/* Instant Matchmaking (Play Again) Button with same word length */}
+                <button
+                  onClick={async () => {
+                    playClickSound(settings.soundEnabled);
+                    const currentWordLen = activeMatch?.wordLength || duelWordLength || wordLength || 5;
+                    await handleLeaveMatchToMenu();
+                    setTimeout(() => {
+                      handleStartMatchmaking(currentWordLen);
+                    }, 100);
+                  }}
+                  className="w-full py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-lg flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-slate-950 shadow-emerald-500/20 cursor-pointer border border-emerald-400/50"
+                  id="match-play-again-btn"
+                >
+                  <RotateCcw size={16} className="stroke-[2.5]" />
+                  <span>TEKRAR OYNA</span>
+                </button>
+
                 {(() => {
                   const currentAuthUid = auth.currentUser?.uid;
                   const selfId = currentAuthUid || profile?.id || '';
@@ -6449,78 +6383,6 @@ export default function App() {
                 Kapat
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Word History Modal (Kelime Geçmişi İnceleme) */}
-      {showWordHistoryModal && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fadeIn" id="word-history-modal">
-          <div className="w-full max-w-sm bg-[#161D2B] border-2 border-amber-500/40 rounded-3xl p-5 shadow-2xl space-y-4 text-left relative text-[#FAF6E9] animate-scaleUp">
-            <button
-              type="button"
-              onClick={() => setShowWordHistoryModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-full bg-slate-800 border border-slate-700 cursor-pointer"
-            >
-              <X size={18} />
-            </button>
-
-            <div className="flex items-center gap-2.5 border-b border-slate-700/60 pb-3">
-              <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold text-lg">
-                📜
-              </div>
-              <div>
-                <h3 className="text-base font-black text-amber-300 tracking-wide uppercase">Kelime Geçmişi</h3>
-                <p className="text-[11px] text-slate-400">Bu turda denediğiniz tüm kelimeler ({attempts.length}/6)</p>
-              </div>
-            </div>
-
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1 custom-scrollbar">
-              {attempts.length === 0 ? (
-                <div className="py-8 text-center text-slate-400 text-xs italic bg-slate-900/40 rounded-2xl border border-slate-800/80">
-                  Henüz bir kelime denemediniz.
-                </div>
-              ) : (
-                attempts.map((att, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-2.5 bg-slate-900/70 rounded-xl border border-slate-700/60 font-mono text-xs">
-                    <span className="text-amber-400 font-bold text-[10px] w-6">#{idx + 1}</span>
-                    <div className="flex gap-1">
-                      {att.word.split('').map((char, cIdx) => {
-                        const fb = att.feedback?.[cIdx];
-                        const bg = fb === 'green' 
-                          ? 'bg-emerald-500 text-white font-black shadow-sm' 
-                          : fb === 'orange' 
-                          ? 'bg-amber-500 text-white font-black shadow-sm' 
-                          : 'bg-slate-700 text-slate-300 font-bold';
-                        return (
-                          <span key={cIdx} className={`w-6 h-6 rounded flex items-center justify-center text-xs uppercase ${bg}`}>
-                            {char}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-[11px] text-amber-200/90 leading-relaxed space-y-1">
-              <p className="font-extrabold text-amber-300 flex items-center gap-1.5">
-                <Info size={13} className="shrink-0 text-amber-400" />
-                Tekrar Kelime Engeli
-              </p>
-              <p className="text-[10.5px]">
-                Aynı kelimelerin tekrar yazılması engellenmektedir. Böylece deneme haklarınız boşa harcanmaz.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowWordHistoryModal(false)}
-              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition cursor-pointer shadow-lg shadow-amber-500/20"
-            >
-              Tamam
-            </button>
           </div>
         </div>
       )}

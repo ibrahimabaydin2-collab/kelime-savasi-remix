@@ -1374,11 +1374,12 @@ async function startServer() {
             matchmakingQueuesByLength.set(length, lengthQueue);
           }
 
-          // Find waiting opponent ONLY in this exact word length queue
+          // Find waiting opponent ONLY in this exact word length queue with strict wordLength validation
           const matchIndex = lengthQueue.findIndex(q =>
             q.ws !== ws &&
             q.player?.id !== player.id &&
-            q.ws.readyState === WebSocket.OPEN
+            q.ws.readyState === WebSocket.OPEN &&
+            Number(q.wordLength) === length
           );
           if (matchIndex !== -1) {
             const opponent = lengthQueue.splice(matchIndex, 1)[0];
@@ -1644,46 +1645,6 @@ async function startServer() {
               setTimeout(() => activeDuelMatches.delete(matchId), 15000);
             }
           }
-        } else if (data.type === 'player_attempt') {
-          const matchId = data.matchId || socketToMatchIdMap.get(ws);
-          const senderId = data.playerId || connectedClients.get(ws)?.id;
-          const count = Number(data.attemptCount || data.attemptsCount || (Array.isArray(data.attempts) ? data.attempts.length : 0)) || 1;
-
-          if (matchId) {
-            const match = activeDuelMatches.get(matchId);
-            if (match) {
-              const isP1 = match.player1.id === senderId || match.player1.ws === ws;
-              const sender = isP1 ? match.player1 : match.player2;
-              if (sender && sender.attempts.length < count) {
-                while (sender.attempts.length < count) {
-                  sender.attempts.push({ word: String(data.word || ''), result: [] });
-                }
-              }
-              broadcastToMatch(match, {
-                type: 'opponent_attempt',
-                matchId: match.matchId,
-                opponentId: senderId,
-                attemptCount: count,
-                attemptsCount: count,
-                attempts: data.attempts
-              });
-            } else {
-              for (const [clientWs, clientData] of connectedClients.entries()) {
-                if (clientWs.readyState === WebSocket.OPEN && clientWs !== ws) {
-                  if (socketToMatchIdMap.get(clientWs) === matchId || (clientData.id && clientData.id !== senderId)) {
-                    sendWs(clientWs, {
-                      type: 'opponent_attempt',
-                      matchId,
-                      opponentId: senderId,
-                      attemptCount: count,
-                      attemptsCount: count,
-                      attempts: data.attempts
-                    });
-                  }
-                }
-              }
-            }
-          }
         } else if (data.type === 'leave_match') {
           handlePlayerDisconnect(ws);
         } else if (data.type === 'challenge') {
@@ -1735,7 +1696,17 @@ async function startServer() {
           const challenge = activeServerChallenges.get(challengeId) || data.challenge;
 
           if (accept) {
-            const wordLength = Number(data.wordLength || challenge?.wordLength) || 5;
+            const challengeWordLength = Number(challenge?.wordLength) || 5;
+            const dataWordLength = data.wordLength ? Number(data.wordLength) : challengeWordLength;
+
+            // Strict server-side validation check: both players must have the same word length
+            if (data.wordLength && challenge?.wordLength && Number(data.wordLength) !== Number(challenge.wordLength)) {
+              console.warn(`[Challenge Server] Rejecting match join due to wordLength mismatch: challenge=${challenge.wordLength}, responder=${data.wordLength}`);
+              sendWs(ws, { type: 'error', message: 'Kelime uzunluğu uyuşmazlığı: Düelloya katılan oyuncuların kelime harf sayıları aynı olmalıdır.' });
+              return;
+            }
+
+            const wordLength = challengeWordLength;
             const matchId = data.matchId || challenge?.matchId || ('match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
             const correctWord = turkishUpper(data.targetWord || data.correctWord || challenge?.targetWord || challenge?.correctWord || getRandomWord(wordLength, true));
 
