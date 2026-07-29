@@ -40,7 +40,8 @@ import {
   updateDoc,
   arrayUnion,
   arrayRemove,
-  setLogLevel
+  setLogLevel,
+  onSnapshot
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { UserProfile, FriendRequest } from '../types';
@@ -238,20 +239,190 @@ export async function signOutUser(): Promise<void> {
 }
 
 /**
+ * Utility to merge user profiles safely without losing gold, dailyScore, stats, badges, or missions.
+ * Takes the maximum / union of progress from all provided profile objects.
+ */
+export function createOrMergeProfile(
+  primary?: Partial<UserProfile> | null,
+  ...fallbackProfiles: Array<Partial<UserProfile> | null | undefined>
+): UserProfile {
+  const DEFAULT_STATS = {
+    gamesPlayed: 0,
+    gamesWon: 0,
+    currentStreak: 0,
+    maxStreak: 0,
+    winDistribution: [0, 0, 0, 0, 0, 0]
+  };
+
+  const DEFAULT_WORD_LENGTH_STATS = {
+    "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0
+  };
+
+  const allProfiles = [primary, ...fallbackProfiles].filter(Boolean) as Array<Partial<UserProfile>>;
+
+  let mergedId = primary?.id || fallbackProfiles.find(p => p?.id)?.id || `user_${Math.random().toString(36).substring(2, 11)}`;
+  let mergedName = '';
+  let mergedAvatarUrl = '🧠';
+  let mergedGold = 20;
+  let mergedDailyScore = 0;
+  let mergedNameSet = false;
+  let mergedDeviceId = '';
+  let mergedLastDailyLoginClaim = '';
+  
+  const mergedStats = { ...DEFAULT_STATS };
+  const mergedWordLengthStats = { ...DEFAULT_WORD_LENGTH_STATS };
+  const badgeMap = new Map<string, any>();
+  const missionMap = new Map<string, any>();
+  const friendSet = new Set<string>();
+
+  const isGenericName = (n?: string) => !n || n === 'Oyuncu' || n === 'Kelime Oyuncusu' || n === 'Google Oyuncusu' || n.startsWith('Savaşçı_');
+
+  // Process profiles from oldest/lowest priority to primary so primary overrides strings/metadata, but numerical progress takes max()
+  for (const p of [...allProfiles].reverse()) {
+    if (p.id) mergedId = p.id;
+    if (p.name && (!mergedName || isGenericName(mergedName))) {
+      mergedName = p.name;
+    }
+    if (p.avatarUrl) mergedAvatarUrl = p.avatarUrl;
+    if (p.nameSet !== undefined) mergedNameSet = mergedNameSet || p.nameSet;
+    if (p.deviceId) mergedDeviceId = p.deviceId;
+    if (p.lastDailyLoginClaim) mergedLastDailyLoginClaim = p.lastDailyLoginClaim;
+
+    if (typeof p.gold === 'number') {
+      mergedGold = Math.max(mergedGold, p.gold);
+    }
+    if (typeof p.dailyScore === 'number') {
+      mergedDailyScore = Math.max(mergedDailyScore, p.dailyScore);
+    }
+
+    if (p.stats) {
+      mergedStats.gamesPlayed = Math.max(mergedStats.gamesPlayed, p.stats.gamesPlayed || 0);
+      mergedStats.gamesWon = Math.max(mergedStats.gamesWon, p.stats.gamesWon || 0);
+      mergedStats.currentStreak = Math.max(mergedStats.currentStreak, p.stats.currentStreak || 0);
+      mergedStats.maxStreak = Math.max(mergedStats.maxStreak, p.stats.maxStreak || 0);
+      
+      if (Array.isArray(p.stats.winDistribution)) {
+        p.stats.winDistribution.forEach((val, idx) => {
+          if (idx < 6) {
+            mergedStats.winDistribution[idx] = Math.max(mergedStats.winDistribution[idx] || 0, val || 0);
+          }
+        });
+      }
+    }
+
+    if (p.wordLengthStats) {
+      Object.keys(DEFAULT_WORD_LENGTH_STATS).forEach((key) => {
+        const count = p.wordLengthStats?.[key] || 0;
+        mergedWordLengthStats[key as keyof typeof DEFAULT_WORD_LENGTH_STATS] = Math.max(
+          mergedWordLengthStats[key as keyof typeof DEFAULT_WORD_LENGTH_STATS] || 0,
+          count
+        );
+      });
+    }
+
+    if (Array.isArray(p.badges)) {
+      p.badges.forEach(badge => {
+        const existing = badgeMap.get(badge.id);
+        if (!existing || (!existing.unlockedAt && badge.unlockedAt)) {
+          badgeMap.set(badge.id, badge);
+        }
+      });
+    }
+
+    if (Array.isArray(p.missions)) {
+      p.missions.forEach(mission => {
+        const existing = missionMap.get(mission.id);
+        if (!existing) {
+          missionMap.set(mission.id, mission);
+        } else {
+          missionMap.set(mission.id, {
+            ...existing,
+            current: Math.max(existing.current || 0, mission.current || 0),
+            completed: existing.completed || mission.completed
+          });
+        }
+      });
+    }
+
+    if (Array.isArray(p.friends)) {
+      p.friends.forEach(f => friendSet.add(f));
+    }
+  }
+
+  if (primary?.name && !isGenericName(primary.name)) {
+    mergedName = primary.name;
+  }
+  if (primary?.avatarUrl) {
+    mergedAvatarUrl = primary.avatarUrl;
+  }
+
+  return {
+    id: mergedId,
+    name: mergedName || 'Kelime Oyuncusu',
+    avatarUrl: mergedAvatarUrl,
+    gold: mergedGold,
+    dailyScore: mergedDailyScore,
+    stats: mergedStats,
+    wordLengthStats: mergedWordLengthStats,
+    badges: Array.from(badgeMap.values()),
+    missions: Array.from(missionMap.values()),
+    friends: Array.from(friendSet),
+    nameSet: mergedNameSet || !!mergedName,
+    deviceId: mergedDeviceId,
+    lastDailyLoginClaim: mergedLastDailyLoginClaim,
+    lastUpdated: new Date().toISOString()
+  };
+}
+
+/**
+ * Subscribes to real-time changes of a user profile in Firestore
+ */
+export function subscribeToUserProfile(
+  uid: string,
+  onUpdate: (profile: UserProfile) => void,
+  onError?: (error: any) => void
+): () => void {
+  if (!uid) return () => {};
+  const userDocRef = doc(db, 'users', uid);
+  
+  return onSnapshot(
+    userDocRef,
+    (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as UserProfile;
+        const fullProfile = createOrMergeProfile(data, { id: uid });
+        onUpdate(fullProfile);
+      }
+    },
+    (err) => {
+      console.warn(`Realtime profile listener warning for ${uid}:`, err);
+      if (onError) onError(err);
+    }
+  );
+}
+
+/**
  * Fetches the user profile from Firestore matching a specific Device ID
  */
 export async function fetchUserProfileByDeviceId(deviceId: string): Promise<UserProfile | null> {
+  if (!deviceId) return null;
   try {
     const usersCollection = collection(db, 'users');
-    const q = query(usersCollection, where('deviceId', '==', deviceId), limit(1));
+    const q = query(usersCollection, where('deviceId', '==', deviceId), limit(5));
     const querySnapshot = await Promise.race([
       getDocs(q),
       new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Firestore Fetch Timeout')), 4000))
     ]) as any;
 
     if (querySnapshot && !querySnapshot.empty) {
-      const docSnap = querySnapshot.docs[0];
-      return docSnap.data() as UserProfile;
+      const profiles = querySnapshot.docs.map((docSnap: any) => docSnap.data() as UserProfile);
+      if (profiles.length === 1) return profiles[0];
+      // Merge matching profiles so highest progress/stats is returned
+      let bestProfile: UserProfile = profiles[0];
+      for (let i = 1; i < profiles.length; i++) {
+        bestProfile = createOrMergeProfile(bestProfile, profiles[i]);
+      }
+      return bestProfile;
     }
   } catch (error) {
     console.warn('Failed to fetch user profile by deviceId:', error);

@@ -58,6 +58,7 @@ interface WelcomeScreenProps {
   onWatchRewardedAdReward?: () => Promise<void>;
   onStartMatchmaking?: (wordsCount?: number) => void;
   onChallengePlayer?: (player: { id: string; name: string }, wordLength: number) => void;
+  isChallengePending?: boolean;
   matchmakingStatus?: 'idle' | 'queued';
 }
 
@@ -90,6 +91,7 @@ export default function WelcomeScreen({
   onWatchRewardedAdReward,
   onStartMatchmaking,
   onChallengePlayer,
+  isChallengePending = false,
   matchmakingStatus = 'idle'
 }: WelcomeScreenProps) {
   const [showHowToPlay, setShowHowToPlay] = useState<boolean>(false);
@@ -1582,6 +1584,7 @@ export default function WelcomeScreen({
             setShowFriendsModal(false);
             if (onChallengePlayer) onChallengePlayer(player, wLen);
           }}
+          isChallengePending={isChallengePending}
           duelWordLength={duelWordLength}
           wordLength={wordLength}
         />

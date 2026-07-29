@@ -1428,7 +1428,7 @@ async function startServer() {
 
           const player = { id: playerId, name: playerName, avatarUrl: playerAvatar };
           connectedClients.set(ws, player);
-          const rawLength = data.wordLength ?? data.length ?? data.wordsCount ?? data.duelWordLength;
+          const rawLength = data.wordLength;
           const parsedRaw = parseInt(String(rawLength), 10);
           if (rawLength === undefined || rawLength === null || isNaN(parsedRaw)) {
             console.warn('[Duel Server] Rejecting join_matchmaking: missing or invalid wordLength in payload:', data);
@@ -1440,22 +1440,38 @@ async function startServer() {
           // Clean up stale, closed sockets or old queue entries across ALL word length queues for this ws/player ID
           removeFromAllMatchmakingQueues(ws, player.id);
 
-          // Get or initialize dedicated queue for this exact word length
+          // STEP 1: Query ONLY the dedicated queue corresponding strictly to the second player's requested word length
           let lengthQueue = matchmakingQueuesByLength.get(length);
           if (!lengthQueue) {
             lengthQueue = [];
             matchmakingQueuesByLength.set(length, lengthQueue);
           }
 
-          // Find waiting opponent ONLY in this exact word length queue with strict wordLength validation
+          // Search strictly for a waiting candidate ONLY in this exact word length pool
           const matchIndex = lengthQueue.findIndex(q =>
+            Number(q.wordLength) === length &&
             q.ws !== ws &&
             q.player?.id !== player.id &&
-            q.ws.readyState === WebSocket.OPEN &&
-            Number(q.wordLength) === length
+            q.ws.readyState === WebSocket.OPEN
           );
+
           if (matchIndex !== -1) {
+            const candidateOpponent = lengthQueue[matchIndex];
+            const candidateWordLength = Number(candidateOpponent?.wordLength);
+
+            // STEP 2 & 3: Double verify letter counts BEFORE removing candidate or triggering any match events
+            if (candidateWordLength !== length) {
+              console.warn(`[Matchmaking Filter Guard] Mismatch detected: Candidate wordLength (${candidateWordLength}) !== joining player wordLength (${length}). Candidate remains completely untouched in queue.`);
+              // DO NOT splice candidate! Do NOT touch candidate's status, socket, or database record!
+              // Simply add the second player to their own length queue and set to queued state
+              lengthQueue.push({ ws, player, wordLength: length, timestamp: Date.now() });
+              sendWs(ws, { type: 'queued', wordLength: length });
+              return;
+            }
+
+            // ONLY when word lengths match 100% exactly, safely remove candidate from queue and proceed to build match
             const opponent = lengthQueue.splice(matchIndex, 1)[0];
+
             const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
             const correctWord = turkishUpper(getRandomWord(length, true));
 
@@ -1946,7 +1962,14 @@ async function startServer() {
             activeServerChallenges.delete(challengeId);
           } else {
             setDoc(doc(db, 'challenges', challengeId), { status: 'declined' }, { merge: true }).catch(() => {});
+            deleteDoc(doc(db, 'challenges', challengeId)).catch(() => {});
             activeServerChallenges.delete(challengeId);
+          }
+        } else if (data.type === 'challenge_cancel' || data.type === 'challenge_timeout') {
+          const challengeId = data.challengeId;
+          if (challengeId) {
+            activeServerChallenges.delete(challengeId);
+            deleteDoc(doc(db, 'challenges', challengeId)).catch(() => {});
           }
         }
       } catch (e) {

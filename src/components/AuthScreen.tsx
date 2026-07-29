@@ -14,7 +14,9 @@ import {
   auth,
   RecaptchaVerifier,
   signInWithPhoneNumber,
-  checkUsernameExists
+  checkUsernameExists,
+  createOrMergeProfile,
+  fetchUserProfileByDeviceId
 } from '../lib/firebase';
 
 interface AuthScreenProps {
@@ -225,29 +227,26 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
           safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
         } catch (e) {}
         const profile = await fetchUserProfile(user.uid);
-        if (profile) {
-          onAuthComplete(profile, user);
-        } else {
-          const initialProfile: UserProfile = {
+        const deviceId = safeLocalStorage.getItem('kelimesavasi_device_id') || '';
+        const deviceProfile = await fetchUserProfileByDeviceId(deviceId);
+        const cachedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
+        let cachedProfile: UserProfile | null = null;
+        if (cachedProfileStr) {
+          try { cachedProfile = JSON.parse(cachedProfileStr); } catch (e) {}
+        }
+        const mergedProfile = createOrMergeProfile(
+          profile,
+          {
             id: user.uid,
             name: user.displayName || user.email?.split('@')[0] || 'Google Oyuncusu',
             avatarUrl: user.photoURL || '🧠',
-            stats: {
-              gamesPlayed: 0,
-              gamesWon: 0,
-              currentStreak: 0,
-              maxStreak: 0,
-              winDistribution: [0, 0, 0, 0, 0, 0],
-            },
-            badges: [],
-            missions: [],
-            dailyScore: 0,
-            lastUpdated: new Date().toISOString(),
             nameSet: true
-          };
-          await saveUserProfileToFirestore(initialProfile);
-          onAuthComplete(initialProfile, user);
-        }
+          },
+          deviceProfile,
+          cachedProfile
+        );
+        await saveUserProfileToFirestore(mergedProfile);
+        onAuthComplete(mergedProfile, user);
       }
     } catch (err: any) {
       if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') {
@@ -347,29 +346,26 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
           safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
         } catch (e) {}
         const profile = await fetchUserProfile(user.uid);
-        if (profile) {
-          onAuthComplete(profile, user);
-        } else {
-          const initialProfile: UserProfile = {
+        const deviceId = safeLocalStorage.getItem('kelimesavasi_device_id') || '';
+        const deviceProfile = await fetchUserProfileByDeviceId(deviceId);
+        const cachedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
+        let cachedProfile: UserProfile | null = null;
+        if (cachedProfileStr) {
+          try { cachedProfile = JSON.parse(cachedProfileStr); } catch (e) {}
+        }
+        const mergedProfile = createOrMergeProfile(
+          profile,
+          {
             id: user.uid,
             name: username.trim() || 'Savaşçı_' + user.uid.substring(0, 5),
             avatarUrl: selectedAvatar || '🧠',
-            stats: {
-              gamesPlayed: 0,
-              gamesWon: 0,
-              currentStreak: 0,
-              maxStreak: 0,
-              winDistribution: [0, 0, 0, 0, 0, 0],
-            },
-            badges: [],
-            missions: [],
-            dailyScore: 0,
-            lastUpdated: new Date().toISOString(),
             nameSet: !!username.trim()
-          };
-          await saveUserProfileToFirestore(initialProfile);
-          onAuthComplete(initialProfile, user);
-        }
+          },
+          deviceProfile,
+          cachedProfile
+        );
+        await saveUserProfileToFirestore(mergedProfile);
+        onAuthComplete(mergedProfile, user);
       }
     } catch (error: any) {
       console.error('Phone auth verify OTP error:', error);
@@ -440,39 +436,35 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
 
         // 1. Play as Guest (Anonymous Auth)
         const firebaseUser = await signInAsGuest();
-        
-        // Create initial guest profile
-        const initialProfile: UserProfile = {
-          id: firebaseUser.uid,
-          name: cleanName,
-          avatarUrl: selectedAvatar,
-          stats: {
-            gamesPlayed: 0,
-            gamesWon: 0,
-            currentStreak: 0,
-            maxStreak: 0,
-            winDistribution: [0, 0, 0, 0, 0, 0],
-          },
-          badges: [],
-          missions: [],
-          dailyScore: 0,
-          lastUpdated: new Date().toISOString(),
-          nameSet: true
-        };
+        const deviceId = safeLocalStorage.getItem('kelimesavasi_device_id') || '';
+        const fetchedProfile = await fetchUserProfile(firebaseUser.uid);
+        const deviceProfile = await fetchUserProfileByDeviceId(deviceId);
+        const cachedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
+        let cachedProfile: UserProfile | null = null;
+        if (cachedProfileStr) {
+          try { cachedProfile = JSON.parse(cachedProfileStr); } catch (e) {}
+        }
+
+        const mergedProfile = createOrMergeProfile(
+          fetchedProfile,
+          { id: firebaseUser.uid, name: cleanName, avatarUrl: selectedAvatar, nameSet: true, deviceId },
+          deviceProfile,
+          cachedProfile
+        );
 
         // Save complete profile to local storage immediately so it is instantly available in APK
         try {
-          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(initialProfile));
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(mergedProfile));
           safeLocalStorage.setItem('saved_username', cleanName);
           safeLocalStorage.setItem('kelimesavasi_is_registered', 'false');
         } catch (e) {}
 
         // Non-blocking save to Firestore
-        saveUserProfileToFirestore(initialProfile).catch((err) => {
+        saveUserProfileToFirestore(mergedProfile).catch((err) => {
           console.warn('Firestore guest profile save warning:', err);
         });
 
-        onAuthComplete(initialProfile, firebaseUser);
+        onAuthComplete(mergedProfile, firebaseUser);
 
       } else if (mode === 'register') {
         const cleanName = username.trim();
@@ -480,49 +472,37 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
           safeLocalStorage.setItem('kelimesavasi_signing_in', 'true');
           safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
           safeLocalStorage.setItem('saved_username', cleanName);
-          const tempProfile = {
-            name: cleanName,
-            avatarUrl: selectedAvatar,
-            nameSet: true
-          };
-          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(tempProfile));
         } catch (e) {
           console.warn(e);
         }
 
         // 2. Register with Email/Password
         const firebaseUser = await registerWithEmailAndPassword(email, password);
+        const deviceId = safeLocalStorage.getItem('kelimesavasi_device_id') || '';
+        const deviceProfile = await fetchUserProfileByDeviceId(deviceId);
+        const cachedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
+        let cachedProfile: UserProfile | null = null;
+        if (cachedProfileStr) {
+          try { cachedProfile = JSON.parse(cachedProfileStr); } catch (e) {}
+        }
         
-        // Create initial email profile
-        const initialProfile: UserProfile = {
-          id: firebaseUser.uid,
-          name: cleanName,
-          avatarUrl: selectedAvatar,
-          stats: {
-            gamesPlayed: 0,
-            gamesWon: 0,
-            currentStreak: 0,
-            maxStreak: 0,
-            winDistribution: [0, 0, 0, 0, 0, 0],
-          },
-          badges: [],
-          missions: [],
-          dailyScore: 0,
-          lastUpdated: new Date().toISOString(),
-          nameSet: true
-        };
+        const mergedProfile = createOrMergeProfile(
+          { id: firebaseUser.uid, name: cleanName, avatarUrl: selectedAvatar, nameSet: true, deviceId },
+          deviceProfile,
+          cachedProfile
+        );
 
         try {
-          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(initialProfile));
+          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(mergedProfile));
           safeLocalStorage.setItem('saved_username', cleanName);
           safeLocalStorage.setItem('kelimesavasi_is_registered', 'true');
         } catch (e) {}
 
-        saveUserProfileToFirestore(initialProfile).catch((err) => {
+        saveUserProfileToFirestore(mergedProfile).catch((err) => {
           console.warn('Firestore register profile save warning:', err);
         });
 
-        onAuthComplete(initialProfile, firebaseUser);
+        onAuthComplete(mergedProfile, firebaseUser);
 
       } else if (mode === 'login') {
         try {
@@ -531,37 +511,27 @@ export default function AuthScreen({ onAuthComplete }: AuthScreenProps) {
         // 3. Login with Email/Password
         const firebaseUser = await loginWithEmailAndPassword(email, password);
         
-        // Fetch existing profile from Firestore
+        // Fetch existing profile from Firestore and merge with device / local profile if any
         const fetchedProfile = await fetchUserProfile(firebaseUser.uid);
-        
-        if (fetchedProfile) {
-          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(fetchedProfile));
-          if (fetchedProfile.name) safeLocalStorage.setItem('saved_username', fetchedProfile.name);
-          onAuthComplete(fetchedProfile, firebaseUser);
-        } else {
-          // If no profile exists, generate a basic one
-          const fallbackProfile: UserProfile = {
-            id: firebaseUser.uid,
-            name: firebaseUser.email?.split('@')[0] || 'Oyuncu',
-            avatarUrl: '🧠',
-            stats: {
-              gamesPlayed: 0,
-              gamesWon: 0,
-              currentStreak: 0,
-              maxStreak: 0,
-              winDistribution: [0, 0, 0, 0, 0, 0],
-            },
-            badges: [],
-            missions: [],
-            dailyScore: 0,
-            lastUpdated: new Date().toISOString(),
-            nameSet: true
-          };
-          safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(fallbackProfile));
-          if (fallbackProfile.name) safeLocalStorage.setItem('saved_username', fallbackProfile.name);
-          saveUserProfileToFirestore(fallbackProfile).catch(err => console.warn(err));
-          onAuthComplete(fallbackProfile, firebaseUser);
+        const deviceId = safeLocalStorage.getItem('kelimesavasi_device_id') || '';
+        const deviceProfile = await fetchUserProfileByDeviceId(deviceId);
+        const cachedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
+        let cachedProfile: UserProfile | null = null;
+        if (cachedProfileStr) {
+          try { cachedProfile = JSON.parse(cachedProfileStr); } catch (e) {}
         }
+        
+        const mergedProfile = createOrMergeProfile(
+          fetchedProfile,
+          { id: firebaseUser.uid, name: firebaseUser.email?.split('@')[0] || 'Oyuncu', avatarUrl: '🧠', nameSet: true, deviceId },
+          deviceProfile,
+          cachedProfile
+        );
+        
+        safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(mergedProfile));
+        if (mergedProfile.name) safeLocalStorage.setItem('saved_username', mergedProfile.name);
+        saveUserProfileToFirestore(mergedProfile).catch(err => console.warn(err));
+        onAuthComplete(mergedProfile, firebaseUser);
       }
     } catch (err: any) {
       try {

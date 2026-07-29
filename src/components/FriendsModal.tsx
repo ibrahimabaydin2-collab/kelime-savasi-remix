@@ -32,6 +32,7 @@ interface FriendsModalProps {
   isOnline: boolean;
   lobbyPlayers?: any[];
   onChallengePlayer?: (player: UserProfile, wordLength: number) => void;
+  isChallengePending?: boolean;
   duelWordLength?: number;
   wordLength?: number;
   showToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
@@ -44,6 +45,7 @@ export default function FriendsModal({
   isOnline,
   lobbyPlayers = [],
   onChallengePlayer,
+  isChallengePending = false,
   duelWordLength = 5,
   wordLength = 5,
   showToast
@@ -424,12 +426,19 @@ export default function FriendsModal({
                           {onChallengePlayer && online && (
                             <button
                               type="button"
+                              disabled={isChallengePending}
                               onClick={() => onChallengePlayer(friend, duelWordLength || wordLength || 5)}
-                              className="px-2.5 py-1.5 bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 rounded-xl text-[10.5px] font-black uppercase transition flex items-center gap-1 shadow-md shadow-amber-500/10 cursor-pointer border border-amber-200/40"
-                              title="Düelloya Davet Et"
+                              className={`px-2.5 py-1.5 rounded-xl text-[10.5px] font-black uppercase transition flex items-center gap-1 border ${
+                                isChallengePending
+                                  ? 'bg-slate-800 text-slate-500 border-slate-700 opacity-60 cursor-not-allowed'
+                                  : 'bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 border-amber-200/40 shadow-md shadow-amber-500/10 cursor-pointer'
+                              }`}
+                              title={isChallengePending ? 'İstek Bekleniyor...' : 'Düelloya Davet Et'}
                             >
                               <Swords size={12} />
-                              <span className="hidden sm:inline">Meydan Oku</span>
+                              <span className="hidden sm:inline">
+                                {isChallengePending ? 'Bekleniyor...' : 'Meydan Oku'}
+                              </span>
                             </button>
                           )}
 

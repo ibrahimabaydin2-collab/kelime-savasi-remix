@@ -23,10 +23,10 @@ import FriendsModal from './components/FriendsModal';
 import SettingsModal, { AppSettings } from './components/SettingsModal';
 import AuthScreen from './components/AuthScreen';
 import BadgeUnlockedModal from './components/BadgeUnlockedModal';
-import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db } from './lib/firebase';
+import { auth, onAuthStateChanged, fetchUserProfile, saveUserProfileToFirestore, signOutUser, fetchUserProfileByDeviceId, deleteUserProfile, signInAsGuest, clearMatchmakingState, updateUserPresence, db, createOrMergeProfile, subscribeToUserProfile } from './lib/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, runTransaction, getDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, GameAttempt, DailyMission, Badge, NetworkLogEntry, isImageUrl } from './types';
-import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut, Wifi, WifiOff, Zap, Users, ArrowDownFromLine } from 'lucide-react';
+import { Swords, RotateCcw, AlertCircle, HelpCircle, Trophy, UserCheck, Flame, Hourglass, HelpCircle as HelpIcon, Sparkles, Upload, Trash2, Image, X, ArrowLeft, Info, Play, Home, LogOut, Wifi, WifiOff, Zap, Users, ArrowDownFromLine, Flag } from 'lucide-react';
 import { getRandomWord, isWordInCuratedList, getDailyWordAndLength, COMMON_TURKISH_WORDS, CLEANED_TURKISH_WORDS } from './data/wordlist';
 import { turkishUpper, turkishLower, validateTurkishLinguistics } from './utils/turkish';
 import { getApiUrl, getWsUrl, validateWordClientSide } from './utils/api';
@@ -43,18 +43,7 @@ const INITIAL_STATS = {
 };
 
 export const ensureProfileFields = (p: UserProfile): UserProfile => {
-  return {
-    ...p,
-    gold: p.gold !== undefined ? p.gold : 20,
-    friends: Array.isArray(p.friends) ? p.friends : [],
-    lastDailyLoginClaim: p.lastDailyLoginClaim !== undefined ? p.lastDailyLoginClaim : '',
-    wordLengthStats: p.wordLengthStats || {
-      "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0
-    },
-    missions: p.missions || DEFAULT_MISSIONS,
-    badges: p.badges || DEFAULT_BADGES,
-    stats: p.stats || INITIAL_STATS
-  };
+  return createOrMergeProfile(p);
 };
 
 const DEFAULT_BADGES: Badge[] = [
@@ -1471,6 +1460,119 @@ export default function App() {
   const [reconnectCounter, setReconnectCounter] = useState<number>(0);
   const [lobbyPlayers, setLobbyPlayers] = useState<any[]>([]);
   const [activeChallenges, setActiveChallenges] = useState<any[]>([]);
+  const [pendingSentChallenge, setPendingSentChallenge] = useState<{
+    id: string;
+    challengedId: string;
+    challengedName: string;
+    wordLength: number;
+    remainingSeconds: number;
+    expiresAt: number;
+  } | null>(null);
+  const pendingSentChallengeRef = useRef<any>(null);
+
+  useEffect(() => {
+    pendingSentChallengeRef.current = pendingSentChallenge;
+  }, [pendingSentChallenge]);
+
+  // Clean up pending challenge on unmount or tab close
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (pendingSentChallengeRef.current?.id) {
+        deleteDoc(doc(db, 'challenges', pendingSentChallengeRef.current.id)).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (pendingSentChallengeRef.current?.id) {
+        deleteDoc(doc(db, 'challenges', pendingSentChallengeRef.current.id)).catch(() => {});
+      }
+    };
+  }, []);
+
+  const handleCancelOrTimeoutSentChallenge = async (challengeId: string, isTimeout = false) => {
+    const target = pendingSentChallengeRef.current || pendingSentChallenge;
+    setPendingSentChallenge(null);
+
+    try {
+      await deleteDoc(doc(db, 'challenges', challengeId));
+    } catch (err) {}
+
+    if (target?.challengedId) {
+      try {
+        await deleteDoc(doc(db, 'users', target.challengedId, 'notifications', challengeId));
+      } catch (err) {}
+    }
+
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'challenge_cancel',
+        challengeId
+      }));
+    }
+
+    if (isTimeout) {
+      showToast('⏱️ Meydan okuma isteği zaman aşımına uğradı.', 'info');
+    } else {
+      showToast('Meydan okuma isteği iptal edildi.', 'info');
+    }
+  };
+
+  // 10-Second countdown timer interval for pending sent challenge
+  useEffect(() => {
+    if (!pendingSentChallenge) return;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const rem = Math.ceil((pendingSentChallenge.expiresAt - now) / 1000);
+
+      if (rem <= 0) {
+        clearInterval(interval);
+        handleCancelOrTimeoutSentChallenge(pendingSentChallenge.id, true);
+      } else {
+        setPendingSentChallenge((prev) => (prev ? { ...prev, remainingSeconds: rem } : null));
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [pendingSentChallenge?.id, pendingSentChallenge?.expiresAt]);
+
+  // 10-Second countdown timer interval for incoming active challenges
+  useEffect(() => {
+    if (!activeChallenges || activeChallenges.length === 0) return;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setActiveChallenges((prev) => {
+        const nextArr: any[] = [];
+        let expiredCount = 0;
+
+        prev.forEach((c) => {
+          const expiresAt = c.expiresAt || (c.createdAt ? new Date(c.createdAt).getTime() + 10000 : now + 10000);
+          const rem = Math.ceil((expiresAt - now) / 1000);
+
+          if (rem <= 0) {
+            expiredCount++;
+            deleteDoc(doc(db, 'challenges', c.id)).catch(() => {});
+            if (profile?.id) {
+              deleteDoc(doc(db, 'users', profile.id, 'notifications', c.id)).catch(() => {});
+            }
+          } else {
+            nextArr.push({ ...c, remainingSeconds: rem });
+          }
+        });
+
+        if (expiredCount > 0) {
+          showToast('⏱️ Meydan okuma isteği zaman aşımına uğradı.', 'info');
+        }
+
+        return nextArr;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [activeChallenges.length, profile?.id]);
+
   const [activeMatch, setActiveMatch] = useState<any | null>(null);
 
 
@@ -1681,160 +1783,43 @@ export default function App() {
               }
             }
 
-            // Define the profile sync logic (can be run blocking or in background/SWR mode)
+            // Define the profile sync logic with multi-source merging (Firestore, deviceId, LocalStorage)
             const syncAndFetchProfile = async () => {
-              const dbProfile = await fetchUserProfile(user.uid);
-              if (!active) return;
+              try {
+                const dbProfile = await fetchUserProfile(user.uid);
+                const deviceProfile = await fetchUserProfileByDeviceId(deviceId);
+                
+                let cachedProfile: UserProfile | null = null;
+                const cachedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
+                if (cachedProfileStr) {
+                  try { cachedProfile = JSON.parse(cachedProfileStr); } catch (e) {}
+                }
 
-              if (dbProfile) {
                 const savedUsername = safeLocalStorage.getItem('saved_username');
-                const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
-                let finalName = dbProfile.name || '';
-                let finalAvatar = dbProfile.avatarUrl || '🧠';
+                
+                // Merge all available profile states to take the maximum of gold, score, stats, badges, and missions
+                const finalProfile = createOrMergeProfile(
+                  dbProfile,
+                  deviceProfile,
+                  cachedProfile,
+                  {
+                    id: user.uid,
+                    name: dbProfile?.name || savedUsername || cachedProfile?.name || deviceProfile?.name || '',
+                    deviceId: deviceId
+                  }
+                );
 
-                const isGeneric = (n: string) => !n || n === 'Oyuncu' || n === 'Kelime Oyuncusu' || n.startsWith('Savaşçı_');
-
-                if (savedUsername && (isGeneric(finalName) || !finalName)) {
-                  finalName = savedUsername;
-                } else if ((isGeneric(finalName) || !finalName) && savedProfileStr) {
-                  try {
-                    const parsed = JSON.parse(savedProfileStr);
-                    if (parsed && parsed.name) {
-                      finalName = parsed.name;
-                    }
-                    if (parsed && parsed.avatarUrl) {
-                      finalAvatar = parsed.avatarUrl;
-                    }
-                  } catch (e) {}
-                }
-
-                const finalProfile = ensureProfileFields({
-                  ...dbProfile,
-                  name: finalName,
-                  avatarUrl: finalAvatar,
-                  deviceId: deviceId,
-                  nameSet: !!finalName
-                });
-
-                // If the profile does not have deviceId set, has a different deviceId, or the name/avatar has changed, update Firestore!
-                if (
-                  !finalProfile.deviceId ||
-                  finalProfile.deviceId !== deviceId ||
-                  finalProfile.name !== dbProfile.name ||
-                  finalProfile.avatarUrl !== dbProfile.avatarUrl
-                ) {
-                  finalProfile.deviceId = deviceId;
-                  await saveUserProfileToFirestore(finalProfile);
-                }
                 setProfile(finalProfile);
                 safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(finalProfile));
                 if (finalProfile.name) {
                   safeLocalStorage.setItem('saved_username', finalProfile.name);
                 }
-              } else {
-                // No profile exists for this UID. Let's trigger device profile recovery
-                try {
-                  const existingProfile = await fetchUserProfileByDeviceId(deviceId);
-                  if (existingProfile && existingProfile.id !== user.uid) {
-                    console.log('Found existing profile associated with deviceId. Auto-recovering profile...', existingProfile);
-                    const savedUsername = safeLocalStorage.getItem('saved_username');
-                    const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
-                    let finalName = existingProfile.name || '';
-                    let finalAvatar = existingProfile.avatarUrl || '🧠';
-                    
-                    if (!finalName && savedUsername) {
-                      finalName = savedUsername;
-                    } else if (!finalName && savedProfileStr) {
-                      try {
-                        const parsed = JSON.parse(savedProfileStr);
-                        if (parsed && parsed.name) {
-                          finalName = parsed.name;
-                        }
-                        if (parsed && parsed.avatarUrl) finalAvatar = parsed.avatarUrl;
-                      } catch (e) {}
-                    }
-                    const updatedProfile = ensureProfileFields({
-                      ...existingProfile,
-                      id: user.uid,
-                      name: finalName,
-                      avatarUrl: finalAvatar,
-                      deviceId: deviceId,
-                      nameSet: !!finalName
-                    });
-                    setProfile(updatedProfile);
-                    await saveUserProfileToFirestore(updatedProfile);
-                    // Delete the old profile document to keep usernames unique and avoid duplicate deviceId
-                    if (existingProfile.id) {
-                      await deleteUserProfile(existingProfile.id);
-                    }
-                    safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updatedProfile));
-                    if (updatedProfile.name) {
-                      safeLocalStorage.setItem('saved_username', updatedProfile.name);
-                    }
-                    showToast(`Profiliniz başarıyla geri yüklendi: ${updatedProfile.name}! 🎉`, 'success');
-                  } else {
-                    // No existing profile found with this deviceId. Sync current profile state
-                    const savedUsername = safeLocalStorage.getItem('saved_username');
-                    const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
-                    
-                    let finalName = savedUsername || (profile && profile.name) || '';
-                    let finalAvatar = (profile && profile.avatarUrl) || '🧠';
-                    
-                    if (!finalName && savedProfileStr) {
-                      try {
-                        const parsed = JSON.parse(savedProfileStr);
-                        if (parsed && parsed.name) finalName = parsed.name;
-                        if (parsed && parsed.avatarUrl) finalAvatar = parsed.avatarUrl;
-                      } catch (e) {}
-                    }
-                    const updatedProfile = ensureProfileFields({
-                      ...(profile || {}),
-                      id: user.uid,
-                      name: finalName,
-                      avatarUrl: finalAvatar,
-                      deviceId: deviceId,
-                      nameSet: !!finalName
-                    } as UserProfile);
 
-                    setProfile(updatedProfile);
-                    safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updatedProfile));
-                    if (updatedProfile.name) {
-                      safeLocalStorage.setItem('saved_username', updatedProfile.name);
-                    }
-                    saveUserProfileToFirestore(updatedProfile).catch(err => console.warn(err));
-                  }
-                } catch (deviceCheckErr) {
-                  console.error('Error during automatic device profile recovery after auth:', deviceCheckErr);
-                  // Sync current profile state as fallback
-                  const savedUsername = safeLocalStorage.getItem('saved_username');
-                  const savedProfileStr = safeLocalStorage.getItem('kelimesavasi_profile');
-                  
-                  let finalName = savedUsername || (profile && profile.name) || '';
-                  let finalAvatar = (profile && profile.avatarUrl) || '🧠';
-                  
-                  if (!finalName && savedProfileStr) {
-                    try {
-                      const parsed = JSON.parse(savedProfileStr);
-                      if (parsed && parsed.name) finalName = parsed.name;
-                      if (parsed && parsed.avatarUrl) finalAvatar = parsed.avatarUrl;
-                    } catch (e) {}
-                  }
-                  const updatedProfile = ensureProfileFields({
-                    ...(profile || {}),
-                    id: user.uid,
-                    name: finalName,
-                    avatarUrl: finalAvatar,
-                    deviceId: deviceId,
-                    nameSet: !!finalName
-                  } as UserProfile);
+                // Persist the consolidated profile to Firestore doc
+                await saveUserProfileToFirestore(finalProfile);
 
-                  setProfile(updatedProfile);
-                  safeLocalStorage.setItem('kelimesavasi_profile', JSON.stringify(updatedProfile));
-                  if (updatedProfile.name) {
-                    safeLocalStorage.setItem('saved_username', updatedProfile.name);
-                  }
-                  saveUserProfileToFirestore(updatedProfile).catch(err => console.warn(err));
-                }
+              } catch (syncErr) {
+                console.warn('Profile sync warning:', syncErr);
               }
 
               if (active && !resolved) {
@@ -2039,7 +2024,44 @@ export default function App() {
             } else if (data.type === 'match_joined') {
               const incomingLen = Number(data.wordLength);
               if (matchmakingStatusRef.current === 'queued' && incomingLen && duelWordLengthRef.current && incomingLen !== duelWordLengthRef.current) {
-                console.warn(`[Matchmaking Length Guard] Rejecting match_joined: Queued for ${duelWordLengthRef.current}, received ${incomingLen}`);
+                const intendedLen = duelWordLengthRef.current;
+                console.warn(`[Matchmaking Length Guard] Rejecting match_joined: Queued for ${intendedLen}, received ${incomingLen}. Auto-requeueing into pool ${intendedLen}...`);
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  try { ws.send(JSON.stringify({ type: 'leave_match', matchId: data.matchId })); } catch (e) {}
+                }
+                completelyResetMatchState();
+                setMatchmakingStatus('queued');
+                const currentUidClean = auth.currentUser?.uid || profile?.id;
+                const selfNameClean = getEffectiveSelfName(profile, auth.currentUser);
+                const selfAvatarClean = profile?.avatarUrl || auth.currentUser?.photoURL || '';
+                if (ws && ws.readyState === WebSocket.OPEN && currentUidClean) {
+                  try {
+                    ws.send(JSON.stringify({
+                      type: 'join_matchmaking',
+                      wordLength: intendedLen,
+                      id: currentUidClean,
+                      userId: currentUidClean,
+                      playerId: currentUidClean,
+                      name: selfNameClean,
+                      username: selfNameClean,
+                      displayName: selfNameClean,
+                      avatarUrl: selfAvatarClean
+                    }));
+                  } catch (e) {}
+                }
+                if (currentUidClean) {
+                  setDoc(doc(db, `matchmaking_queue_${intendedLen}`, currentUidClean), {
+                    id: currentUidClean,
+                    userId: currentUidClean,
+                    playerId: currentUidClean,
+                    name: selfNameClean,
+                    avatarUrl: selfAvatarClean,
+                    wordLength: intendedLen,
+                    status: 'waiting',
+                    createdAt: serverTimestamp(),
+                    updatedAt: new Date().toISOString()
+                  }, { merge: true }).catch(() => {});
+                }
                 return;
               }
               setMatchmakingStatus('idle');
@@ -2077,7 +2099,44 @@ export default function App() {
             } else if (data.type === 'match_ready') {
               const incomingLen = Number(data.wordLength);
               if (matchmakingStatusRef.current === 'queued' && incomingLen && duelWordLengthRef.current && incomingLen !== duelWordLengthRef.current) {
-                console.warn(`[Matchmaking Length Guard] Rejecting match_ready: Queued for ${duelWordLengthRef.current}, received ${incomingLen}`);
+                const intendedLen = duelWordLengthRef.current;
+                console.warn(`[Matchmaking Length Guard] Rejecting match_ready: Queued for ${intendedLen}, received ${incomingLen}. Auto-requeueing...`);
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  try { ws.send(JSON.stringify({ type: 'leave_match', matchId: data.matchId })); } catch (e) {}
+                }
+                completelyResetMatchState();
+                setMatchmakingStatus('queued');
+                const currentUidClean = auth.currentUser?.uid || profile?.id;
+                const selfNameClean = getEffectiveSelfName(profile, auth.currentUser);
+                const selfAvatarClean = profile?.avatarUrl || auth.currentUser?.photoURL || '';
+                if (ws && ws.readyState === WebSocket.OPEN && currentUidClean) {
+                  try {
+                    ws.send(JSON.stringify({
+                      type: 'join_matchmaking',
+                      wordLength: intendedLen,
+                      id: currentUidClean,
+                      userId: currentUidClean,
+                      playerId: currentUidClean,
+                      name: selfNameClean,
+                      username: selfNameClean,
+                      displayName: selfNameClean,
+                      avatarUrl: selfAvatarClean
+                    }));
+                  } catch (e) {}
+                }
+                if (currentUidClean) {
+                  setDoc(doc(db, `matchmaking_queue_${intendedLen}`, currentUidClean), {
+                    id: currentUidClean,
+                    userId: currentUidClean,
+                    playerId: currentUidClean,
+                    name: selfNameClean,
+                    avatarUrl: selfAvatarClean,
+                    wordLength: intendedLen,
+                    status: 'waiting',
+                    createdAt: serverTimestamp(),
+                    updatedAt: new Date().toISOString()
+                  }, { merge: true }).catch(() => {});
+                }
                 return;
               }
 
@@ -2136,7 +2195,44 @@ export default function App() {
             } else if (data.type === 'match_start') {
               const incomingLen = Number(data.wordLength);
               if (matchmakingStatusRef.current === 'queued' && incomingLen && duelWordLengthRef.current && incomingLen !== duelWordLengthRef.current) {
-                console.warn(`[Matchmaking Length Guard] Rejecting match_start: Queued for ${duelWordLengthRef.current}, received ${incomingLen}`);
+                const intendedLen = duelWordLengthRef.current;
+                console.warn(`[Matchmaking Length Guard] Rejecting match_start: Queued for ${intendedLen}, received ${incomingLen}. Auto-requeueing...`);
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  try { ws.send(JSON.stringify({ type: 'leave_match', matchId: data.matchId })); } catch (e) {}
+                }
+                completelyResetMatchState();
+                setMatchmakingStatus('queued');
+                const currentUidClean = auth.currentUser?.uid || profile?.id;
+                const selfNameClean = getEffectiveSelfName(profile, auth.currentUser);
+                const selfAvatarClean = profile?.avatarUrl || auth.currentUser?.photoURL || '';
+                if (ws && ws.readyState === WebSocket.OPEN && currentUidClean) {
+                  try {
+                    ws.send(JSON.stringify({
+                      type: 'join_matchmaking',
+                      wordLength: intendedLen,
+                      id: currentUidClean,
+                      userId: currentUidClean,
+                      playerId: currentUidClean,
+                      name: selfNameClean,
+                      username: selfNameClean,
+                      displayName: selfNameClean,
+                      avatarUrl: selfAvatarClean
+                    }));
+                  } catch (e) {}
+                }
+                if (currentUidClean) {
+                  setDoc(doc(db, `matchmaking_queue_${intendedLen}`, currentUidClean), {
+                    id: currentUidClean,
+                    userId: currentUidClean,
+                    playerId: currentUidClean,
+                    name: selfNameClean,
+                    avatarUrl: selfAvatarClean,
+                    wordLength: intendedLen,
+                    status: 'waiting',
+                    createdAt: serverTimestamp(),
+                    updatedAt: new Date().toISOString()
+                  }, { merge: true }).catch(() => {});
+                }
                 return;
               }
               console.log('[WebSocket Manager] Match START:', data);
@@ -2813,10 +2909,44 @@ export default function App() {
     }
 
     if (isSelfWinner) {
-      showToast('TEBRİKLER! Savaşı Kazandın!', 'success');
+      const isOpponentLeft = matchData?.winReason === 'opponent_left' || opponentLeftDuringMatch;
+      if (isOpponentLeft) {
+        showToast('Rakip maçtan ayrıldı, maçı kazandınız! (+3 Puan)', 'success');
+      } else {
+        showToast('TEBRİKLER! Savaşı Kazandın!', 'success');
+      }
       unlockBadge('gladiator');
-      // Live duel win (no daily score points awarded for duel matches)
       triggerVictoryCelebration(settings.soundEnabled);
+
+      // Award victory points strictly if opponent left (+3 Puan), zero gold (gold preserved untouched)
+      if (profile) {
+        const currentGold = profile.gold !== undefined ? profile.gold : 20;
+        const currentScore = profile.score || 0;
+        const currentDailyScore = profile.dailyScore || 0;
+        const currentStats = profile.stats || { gamesPlayed: 0, gamesWon: 0, currentStreak: 0, maxStreak: 0, winDistribution: [0, 0, 0, 0, 0, 0] };
+        
+        // Step 3: When opponent left in live game, award fixed +3 points.
+        // For normal victory, handleGameWin was ALREADY called in handleValidateWord with the attempt-based score.
+        const pointsToAdd = isOpponentLeft ? 3 : 0;
+
+        const updatedProfile: UserProfile = {
+          ...profile,
+          gold: currentGold, // Step 4: Gold amount remains completely unchanged
+          score: currentScore + pointsToAdd,
+          dailyScore: currentDailyScore + pointsToAdd,
+          stats: {
+            ...currentStats,
+            gamesPlayed: (currentStats.gamesPlayed || 0) + 1,
+            gamesWon: (currentStats.gamesWon || 0) + 1,
+            currentStreak: (currentStats.currentStreak || 0) + 1,
+            maxStreak: Math.max(currentStats.maxStreak || 0, (currentStats.currentStreak || 0) + 1)
+          }
+        };
+        setProfile(updatedProfile);
+        saveUserProfileToFirestore(updatedProfile).catch((err) => {
+          console.warn("Firestore duel win rewards update failed:", err);
+        });
+      }
     } else if (serverWinnerUserId === 'draw') {
       showToast('Düello berabere sona erdi!', 'info');
     } else {
@@ -2952,8 +3082,26 @@ export default function App() {
 
     const unsub = onSnapshot(q, (snapshot) => {
       const pending: any[] = [];
+      const now = Date.now();
       snapshot.forEach((docSnap) => {
-        pending.push({ id: docSnap.id, ...docSnap.data() });
+        const data = docSnap.data();
+        const expiresAt = data.expiresAt || (data.createdAt ? new Date(data.createdAt).getTime() + 10000 : now + 10000);
+        const rem = Math.ceil((expiresAt - now) / 1000);
+
+        if (rem <= 0) {
+          // Document expired - delete immediately from Firestore (Requirement 4)
+          deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
+          if (profile?.id) {
+            deleteDoc(doc(db, 'users', profile.id, 'notifications', docSnap.id)).catch(() => {});
+          }
+        } else {
+          pending.push({
+            id: docSnap.id,
+            ...data,
+            expiresAt,
+            remainingSeconds: rem
+          });
+        }
       });
 
       setActiveChallenges((prev) => {
@@ -2961,7 +3109,7 @@ export default function App() {
         if (newItems.length > 0) {
           playEnterSound(settings.soundEnabled);
           const firstNew = newItems[0];
-          showToast(`⚔️ ${firstNew.challengerName || 'Bir arkadaşın'} sana meydan okudu!`, 'info');
+          showToast(`⚔️ ${firstNew.challengerName || 'Bir arkadaşın'} sana meydan okudu! (10s)`, 'info');
         }
         return pending;
       });
@@ -2982,11 +3130,23 @@ export default function App() {
     );
 
     const unsub = onSnapshot(q, (snapshot) => {
+      if (snapshot.empty && pendingSentChallengeRef.current) {
+        setPendingSentChallenge(null);
+        return;
+      }
+
       snapshot.forEach(async (docSnap) => {
         const data = docSnap.data();
         if (data.status === 'accepted' && data.matchId) {
+          setPendingSentChallenge(null);
           showToast(`🎉 Meydan okuma kabul edildi! Düello başlıyor...`, 'success');
           playEnterSound(settings.soundEnabled);
+
+          // Clean up challenge document from Firestore immediately! (Requirement 4)
+          deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
+          if (data.challengedId) {
+            deleteDoc(doc(db, 'users', data.challengedId, 'notifications', docSnap.id)).catch(() => {});
+          }
 
           const matchId = data.matchId;
           const defaultLen = Number(data.wordLength || 5);
@@ -3055,11 +3215,14 @@ export default function App() {
             player2: p2,
             players: cleanPlayers
           });
-
-          deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
         } else if (data.status === 'declined') {
+          setPendingSentChallenge(null);
           showToast(`❌ ${data.challengedName || 'Rakip'} meydan okumayı reddetti.`, 'error');
+          // Clean up challenge document from Firestore immediately! (Requirement 4)
           deleteDoc(doc(db, 'challenges', docSnap.id)).catch(() => {});
+          if (data.challengedId) {
+            deleteDoc(doc(db, 'users', data.challengedId, 'notifications', docSnap.id)).catch(() => {});
+          }
         }
       });
     }, (err) => {
@@ -3437,25 +3600,26 @@ export default function App() {
   const handleLeaveMatchToMenu = useCallback(async () => {
     console.log('Centralized cleanup: returning to main menu');
 
-    if (activeMatch) {
-      const matchId = activeMatch.matchId || activeMatch.id;
+    const currentActiveMatch = activeMatchRef.current || activeMatch;
+    if (currentActiveMatch) {
+      const matchId = currentActiveMatch.matchId || currentActiveMatch.id;
       const currentUid = auth.currentUser?.uid || profile?.id || '';
       let oppId = '';
 
-      const p1Id = activeMatch.player1?.id || activeMatch.player1?.uid;
-      const p2Id = activeMatch.player2?.id || activeMatch.player2?.uid;
+      const p1Id = currentActiveMatch.player1?.id || currentActiveMatch.player1?.uid;
+      const p2Id = currentActiveMatch.player2?.id || currentActiveMatch.player2?.uid;
       if (p1Id && p1Id !== currentUid && (!profile?.id || p1Id !== profile.id)) {
         oppId = p1Id;
       } else if (p2Id && p2Id !== currentUid && (!profile?.id || p2Id !== profile.id)) {
         oppId = p2Id;
       }
 
-      if (!oppId && activeMatch.players) {
-        const oppObj = Object.values(activeMatch.players).find((p: any) => p?.id && p?.id !== currentUid && (!profile?.id || p?.id !== profile.id)) as any;
+      if (!oppId && currentActiveMatch.players) {
+        const oppObj = Object.values(currentActiveMatch.players).find((p: any) => p?.id && p?.id !== currentUid && (!profile?.id || p?.id !== profile.id)) as any;
         if (oppObj?.id) {
           oppId = oppObj.id;
         } else {
-          const oppKey = Object.keys(activeMatch.players).find(k => k !== currentUid && (!profile?.id || k !== profile.id));
+          const oppKey = Object.keys(currentActiveMatch.players).find(k => k !== currentUid && (!profile?.id || k !== profile.id));
           if (oppKey) oppId = oppKey;
         }
       }
@@ -3728,15 +3892,16 @@ export default function App() {
 
   // Submit Guessed Word
   const submitGuess = async () => {
+    const currentAttempts = attempts || [];
     const isSelfCompleted = (activeMatch && profile?.id) 
-      ? (activeMatch.players[profile.id]?.completed || activeMatch.status === 'ended' || isMatchEnded)
+      ? (activeMatch.players[profile.id]?.completed || activeMatch.players[profile.id]?.attemptsCount >= 6 || activeMatch.status === 'ended' || isMatchEnded)
       : false;
 
     const isPlaying = activeMatch 
       ? (activeMatch.status === 'playing' || activeMatch.gameState === 'PLAYING')
       : (gameStatus === 'playing');
 
-    if (isSelfCompleted || !isPlaying) {
+    if (isSelfCompleted || !isPlaying || currentAttempts.length >= 6 || gameStatus === 'lost' || gameStatus === 'won') {
       return;
     }
 
@@ -4503,9 +4668,15 @@ export default function App() {
   const onChar = useCallback((char: string) => {
     const currentProfile = profileRef.current;
     const currentSettings = settingsRef.current;
-    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
-    const isPlaying = activeMatchRef.current ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
-    if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
+    const currentAttempts = attemptsRef.current || [];
+    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) 
+      ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.players[currentProfile.id]?.attemptsCount >= 6 || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) 
+      : false;
+    const isPlaying = activeMatchRef.current 
+      ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') 
+      : (gameStatusRef.current === 'playing');
+
+    if (!isPlaying || isValidatingRef.current || isSelfCompleted || currentAttempts.length >= 6 || gameStatusRef.current === 'lost' || gameStatusRef.current === 'won') return;
     const normalized = turkishUpper(char);
     if (!/^[A-ZÇĞİÖŞÜ]$/i.test(normalized)) return;
 
@@ -4525,9 +4696,15 @@ export default function App() {
   const onDelete = useCallback(() => {
     const currentProfile = profileRef.current;
     const currentSettings = settingsRef.current;
-    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) : false;
-    const isPlaying = activeMatchRef.current ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
-    if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
+    const currentAttempts = attemptsRef.current || [];
+    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) 
+      ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.players[currentProfile.id]?.attemptsCount >= 6 || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) 
+      : false;
+    const isPlaying = activeMatchRef.current 
+      ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING') 
+      : (gameStatusRef.current === 'playing');
+
+    if (!isPlaying || isValidatingRef.current || isSelfCompleted || currentAttempts.length >= 6 || gameStatusRef.current === 'lost' || gameStatusRef.current === 'won') return;
 
     setCurrentAttempt((prev) => {
       const chars = prev.padEnd(wordLengthRef.current, ' ').split('');
@@ -4568,6 +4745,14 @@ export default function App() {
 
   // Clear current attempt
   const handleClearAttempt = useCallback(() => {
+    const currentAttempts = attemptsRef.current || [];
+    const currentProfile = profileRef.current;
+    const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) 
+      ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.players[currentProfile.id]?.attemptsCount >= 6 || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current) 
+      : false;
+
+    if (isSelfCompleted || currentAttempts.length >= 6 || gameStatusRef.current !== 'playing') return;
+
     if (currentAttemptRef.current.length > 0) {
       setCurrentAttempt('');
       playDeleteSound(settingsRef.current.soundEnabled);
@@ -4583,16 +4768,16 @@ export default function App() {
   const handleTransferRowGreenLetters = useCallback((rowIndex: number) => {
     const currentProfile = profileRef.current;
     const currentSettings = settingsRef.current;
+    const currentAttempts = attemptsRef.current || [];
     const isSelfCompleted = (activeMatchRef.current && currentProfile?.id) 
-      ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current)
+      ? (activeMatchRef.current.players[currentProfile.id]?.completed || activeMatchRef.current.players[currentProfile.id]?.attemptsCount >= 6 || activeMatchRef.current.status === 'ended' || isMatchEndedRef.current)
       : false;
     const isPlaying = activeMatchRef.current 
       ? (activeMatchRef.current.status === 'playing' || activeMatchRef.current.gameState === 'PLAYING')
       : (gameStatusRef.current === 'playing');
 
-    if (!isPlaying || isValidatingRef.current || isSelfCompleted) return;
+    if (!isPlaying || isValidatingRef.current || isSelfCompleted || currentAttempts.length >= 6) return;
 
-    const currentAttempts = attemptsRef.current || [];
     const targetRow = currentAttempts[rowIndex];
     if (!targetRow || !targetRow.feedback || !Array.isArray(targetRow.feedback)) return;
 
@@ -4653,7 +4838,8 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!profile || !profile.id) return;
       const currentMatch = activeMatchRef.current;
-      const isSelfCompleted = currentMatch?.players?.[profile.id]?.completed || currentMatch?.status === 'ended' || isMatchEndedRef.current;
+      const currentAttempts = attemptsRef.current || [];
+      const isSelfCompleted = currentMatch?.players?.[profile.id]?.completed || currentMatch?.players?.[profile.id]?.attemptsCount >= 6 || currentMatch?.status === 'ended' || isMatchEndedRef.current || currentAttempts.length >= 6;
       const isPlaying = currentMatch ? (currentMatch.status === 'playing' || currentMatch.gameState === 'PLAYING') : (gameStatusRef.current === 'playing');
 
       if (
@@ -4666,7 +4852,10 @@ export default function App() {
         showCongratsModalRef.current ||
         !isPlaying ||
         isValidatingRef.current ||
-        isSelfCompleted
+        isSelfCompleted ||
+        currentAttempts.length >= 6 ||
+        gameStatusRef.current === 'lost' ||
+        gameStatusRef.current === 'won'
       ) {
         return;
       }
@@ -4738,6 +4927,11 @@ export default function App() {
       return;
     }
 
+    if (pendingSentChallenge) {
+      showToast('⏳ Devam eden bir meydan okuma isteğiniz var. Lütfen yanıt bekleyin veya iptal edin.', 'info');
+      return;
+    }
+
     const isOpponentOnline = Boolean(
       player.isOnline === true ||
       (player.lastSeen && (Date.now() - (typeof player.lastSeen === 'number' ? player.lastSeen : new Date(player.lastSeen).getTime()) < 180000)) ||
@@ -4745,6 +4939,9 @@ export default function App() {
     );
 
     const challengeId = 'chal_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const now = Date.now();
+    const expiresAt = now + 10000;
+
     const challengeData = {
       id: challengeId,
       challengeId,
@@ -4755,7 +4952,8 @@ export default function App() {
       challengedName: player.name || 'Oyuncu',
       wordLength: length,
       status: 'pending',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      expiresAt
     };
 
     try {
@@ -4773,11 +4971,21 @@ export default function App() {
           wordLength: length,
           status: 'pending',
           read: false,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          expiresAt
         });
       } catch (err) {
         console.warn('Error saving notification doc:', err);
       }
+
+      setPendingSentChallenge({
+        id: challengeId,
+        challengedId: player.id,
+        challengedName: player.name || 'Oyuncu',
+        wordLength: length,
+        remainingSeconds: 10,
+        expiresAt
+      });
 
       // 2. Send via WebSocket if connected
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -4801,18 +5009,41 @@ export default function App() {
       }).catch(() => {});
 
       if (!isOpponentOnline) {
-        showToast(`📲 ${player.name || 'Oyuncu'} şu an oyunda değil. Meydan okuma bildirimi gönderildi! 🔔`, 'info');
+        showToast(`📲 ${player.name || 'Oyuncu'} şu an oyunda değil. Meydan okuma bildirimi gönderildi! 🔔 (10s)`, 'info');
       } else {
-        showToast(`⚔️ ${player.name || 'Oyuncu'} oyuncusuna meydan okundu! Yanıt bekleniyor...`, 'info');
+        showToast(`⚔️ ${player.name || 'Oyuncu'} oyuncusuna meydan okundu! (10s)`, 'info');
       }
     } catch (err) {
       console.error('[Challenge Error]:', err);
       showToast('Meydan okuma gönderilemedi.', 'error');
+      setPendingSentChallenge(null);
     }
   };
 
   const handleAcceptChallenge = async (challengeId: string, challengeObj?: any) => {
     try {
+      // Verify in Firestore that challenge doc is valid and not expired/deleted
+      try {
+        const challengeRef = doc(db, 'challenges', challengeId);
+        const challengeSnap = await getDoc(challengeRef);
+
+        if (!challengeSnap.exists()) {
+          showToast('⚠️ Meydan okuma isteği zaman aşımına uğradı veya iptal edildi.', 'error');
+          setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
+          return;
+        }
+
+        const cData = challengeSnap.data();
+        if (cData.status !== 'pending' || (cData.expiresAt && Date.now() > cData.expiresAt)) {
+          showToast('⚠️ Meydan okuma isteği zaman aşımına uğradı veya iptal edildi.', 'error');
+          deleteDoc(challengeRef).catch(() => {});
+          setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
+          return;
+        }
+      } catch (e) {
+        console.warn('Error verifying challenge doc:', e);
+      }
+
       completelyResetMatchState();
 
       const targetData = challengeObj || activeChallenges.find(c => c.id === challengeId);
@@ -4863,6 +5094,12 @@ export default function App() {
         correctWord,
         matchPayload: initialFirestoreMatch
       }, { merge: true });
+
+      // Clean up challenge document from Firestore immediately! (Requirement 4)
+      deleteDoc(doc(db, 'challenges', challengeId)).catch(() => {});
+      if (profile?.id) {
+        deleteDoc(doc(db, 'users', profile.id, 'notifications', challengeId)).catch(() => {});
+      }
 
       // 2. Send WebSocket response
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -4931,7 +5168,10 @@ export default function App() {
           accept: false
         }));
       }
-      await setDoc(doc(db, 'challenges', challengeId), { status: 'declined' }, { merge: true });
+      await deleteDoc(doc(db, 'challenges', challengeId)).catch(() => {});
+      if (profile?.id) {
+        await deleteDoc(doc(db, 'users', profile.id, 'notifications', challengeId)).catch(() => {});
+      }
       setActiveChallenges((prev) => prev.filter((c) => c.id !== challengeId));
       showToast('Meydan okuma reddedildi.', 'info');
     } catch (err) {
@@ -5076,8 +5316,6 @@ export default function App() {
       };
 
       await setDoc(myQueueRef, queueData);
-      // Also write to general matchmaking_queue with explicit wordLength for strict cross-system tracking
-      setDoc(doc(db, 'matchmaking_queue', currentUid), queueData).catch(() => {});
 
       // Listen to our queue document for matchmaking results
       queueUnsubscribeRef.current = onSnapshot(myQueueRef, (snap) => {
@@ -5095,7 +5333,19 @@ export default function App() {
             }
             const matchLen = Number(data.wordLength);
             if (!matchLen || matchLen !== targetLen) {
-              console.warn(`[Firestore Queue Match Mismatch] Rejection: Expected ${targetLen} letters, but matched data had ${data.wordLength}`);
+              console.warn(`[Firestore Queue Match Mismatch] Rejection: Expected ${targetLen} letters, but matched data had ${data.wordLength}. Restoring queue document...`);
+              setDoc(myQueueRef, {
+                id: currentUid,
+                playerId: currentUid,
+                uid: currentUid,
+                name: selfName,
+                username: selfName,
+                displayName: selfName,
+                avatarUrl: selfAvatar,
+                wordLength: targetLen,
+                status: 'waiting',
+                updatedAt: new Date().toISOString()
+              }, { merge: true }).catch(() => {});
               return;
             }
             console.log("[Firestore Matchmaking] Matched via Firestore snapshot! Match ID:", data.matchId, "Word Length:", matchLen);
@@ -5148,10 +5398,11 @@ export default function App() {
       if (!isWsActive) {
         let querySnap;
         try {
+          // STEP 1 & 2: Primary and mandatory condition is wordLength === targetLen in isolated queue collection
           const qStrict = query(
             collection(db, queueCollectionName),
-            where('status', '==', 'waiting'),
-            where('wordLength', '==', targetLen)
+            where('wordLength', '==', targetLen),
+            where('status', '==', 'waiting')
           );
           querySnap = await getDocs(qStrict);
         } catch (err) {
@@ -5835,7 +6086,7 @@ export default function App() {
                 {/* Scoreboard Players Grid */}
                 <div className="grid grid-cols-11 items-center gap-1.5 sm:gap-2">
                   {/* Player 1: SEN */}
-                  <div className="col-span-5 bg-slate-950/60 border border-emerald-500/30 rounded-xl p-2 flex items-center justify-between gap-1 shadow-sm relative overflow-hidden">
+                  <div className="col-span-5 bg-slate-950/60 border border-emerald-500/30 rounded-xl p-2 flex items-center gap-1 shadow-sm relative overflow-hidden">
                     <div className="absolute top-0 left-0 bottom-0 w-1 bg-emerald-500" />
                     <div className="flex items-center gap-2 min-w-0 pl-1">
                       <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center font-black text-xs text-emerald-300 shrink-0 overflow-hidden shadow-sm">
@@ -5854,10 +6105,6 @@ export default function App() {
                         <span className="text-xs font-black text-white truncate block leading-tight">{profile?.name || 'Sen'}</span>
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <span className="text-[8px] text-slate-400 block leading-none font-mono">SKOR</span>
-                      <span className="text-xs font-black text-emerald-400 font-mono">{selfScore} P</span>
-                    </div>
                   </div>
 
                   {/* Center VS Divider */}
@@ -5868,7 +6115,7 @@ export default function App() {
                   </div>
 
                   {/* Player 2: RAKİP */}
-                  <div className="col-span-5 bg-slate-950/60 border border-amber-500/30 rounded-xl p-2 flex items-center justify-between gap-1 shadow-sm relative overflow-hidden">
+                  <div className="col-span-5 bg-slate-950/60 border border-amber-500/30 rounded-xl p-2 flex items-center gap-1 shadow-sm relative overflow-hidden">
                     <div className="absolute top-0 right-0 bottom-0 w-1 bg-amber-500" />
                     <div className="flex items-center gap-2 min-w-0 pr-1">
                       <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-black text-xs text-amber-300 shrink-0 overflow-hidden shadow-sm">
@@ -5886,10 +6133,6 @@ export default function App() {
                         <span className="text-[9px] text-amber-400 font-extrabold block leading-none font-mono tracking-wider">RAKİP</span>
                         <span className="text-xs font-black text-white truncate block leading-tight">{oppDisplayName}</span>
                       </div>
-                    </div>
-                    <div className="text-right shrink-0 pr-1">
-                      <span className="text-[8px] text-slate-400 block leading-none font-mono">SKOR</span>
-                      <span className="text-xs font-black text-amber-400 font-mono">{oppScore} P</span>
                     </div>
                   </div>
                 </div>
@@ -6176,7 +6419,7 @@ export default function App() {
           )}
 
           {/* Action Buttons Above Keyboard */}
-          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && profile?.id && activeMatch.players[profile.id]?.completed) && (
+          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && (attempts.length >= 6 || (profile?.id && activeMatch.players?.[profile.id]?.completed))) && attempts.length < 6 && (
             <BottomBar
               currentGuess={currentAttempt}
               wordLength={wordLength}
@@ -6188,12 +6431,12 @@ export default function App() {
           )}
 
           {/* Spacer C */}
-          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && profile?.id && activeMatch.players[profile.id]?.completed) && (
+          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && (attempts.length >= 6 || (profile?.id && activeMatch.players?.[profile.id]?.completed))) && attempts.length < 6 && (
             <div className="flex-1 min-h-[0.25rem] sm:min-h-[0.5rem]" />
           )}
 
           {/* Virtual Keyboard */}
-          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && profile?.id && activeMatch.players[profile.id]?.completed) && (
+          {!isMatchEnded && (gameStatus === 'playing' || Boolean(activeMatch)) && !(activeMatch && (attempts.length >= 6 || (profile?.id && activeMatch.players?.[profile.id]?.completed))) && attempts.length < 6 && (
             <Keyboard
               onChar={onChar}
               onDelete={onDelete}
@@ -6206,34 +6449,58 @@ export default function App() {
           )}
 
           {/* Waiting for Opponent Card */}
-          {!isMatchEnded && activeMatch && profile?.id && activeMatch.players[profile.id]?.completed && (
-            <div className="w-full max-w-sm mx-auto bg-slate-900/95 border border-amber-500/25 rounded-3xl p-5 text-center space-y-4 shadow-xl animate-scale-up" id="opponent-waiting-container">
+          {!isMatchEnded && activeMatch && (attempts.length >= 6 || (profile?.id && activeMatch.players?.[profile.id]?.completed)) && (
+            <div className="w-full max-w-sm sm:max-w-md mx-auto bg-slate-900/95 border-2 border-amber-500/30 rounded-3xl p-5 text-center space-y-4 shadow-2xl animate-scale-up" id="opponent-waiting-container">
               <div className="flex flex-col items-center">
-                <div className="relative">
-                  <div className="w-12 h-12 rounded-full border-4 border-amber-400/20 border-t-amber-400 animate-spin flex items-center justify-center">
-                    <Hourglass size={18} className="text-amber-400 animate-pulse" />
+                <div className="relative mb-1">
+                  <div className="w-14 h-14 rounded-full border-4 border-amber-400/20 border-t-amber-400 animate-spin flex items-center justify-center shadow-lg shadow-amber-500/20">
+                    <Hourglass size={22} className="text-amber-400 animate-pulse" />
                   </div>
                 </div>
-                <h3 className="text-sm font-black text-[#FAF6E9] tracking-wide mt-3 uppercase">RAKİP BEKLENİYOR...</h3>
-                <p className="text-[10px] text-gray-400 mt-1 max-w-xs leading-normal">
-                  Siz kelimeyi tamamladınız. Rakibinizin de kelimeyi bitirmesi bekleniyor. Lütfen bekleyin.
+                <h3 className="text-base font-black text-[#FAF6E9] tracking-wide mt-2 uppercase">RAKİP BEKLENİYOR</h3>
+                <p className="text-xs font-semibold text-amber-300/90 mt-1 max-w-xs leading-relaxed">
+                  Rakibin hamlesini bitirmesi bekleniyor...
+                </p>
+                <p className="text-[11px] text-gray-400 mt-0.5 max-w-xs leading-normal">
+                  Tahmin haklarınız doldu. Rakibiniz oyunu tamamlayana kadar bekleyebilir ya da pes ederek maçtan çıkabilirsiniz.
                 </p>
               </div>
 
               {/* Opponent Status Display */}
-              {Object.entries(activeMatch.players).map(([pId, pState]: [string, any]) => {
-                const isOpponent = pId !== profile?.id;
-                if (!isOpponent) return null;
+              {(() => {
+                const oppEntry = Object.values(activeMatch.players || {}).find((p: any) => p && p.id !== profile?.id) as any;
+                const oppName = oppEntry?.name || oppEntry?.displayName || oppEntry?.username || activeMatch.player2?.name || 'Rakip';
+                const oppAttempts = oppEntry?.attempts || [];
+                const oppCount = Array.isArray(oppAttempts) ? oppAttempts.length : (oppEntry?.attemptsCount || 0);
+
                 return (
-                  <div key={pId} className="bg-black/25 rounded-2xl border border-white/5 p-3 flex justify-between items-center text-xs">
-                    <span className="font-bold text-gray-300 uppercase tracking-wide">{pState.name}</span>
+                  <div className="bg-black/40 rounded-2xl border border-white/10 p-3 flex justify-between items-center text-xs shadow-inner">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center font-bold text-xs text-amber-300 shrink-0">
+                        {oppName.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="font-bold text-gray-200 uppercase tracking-wide truncate">{oppName}</span>
+                    </div>
                     <div className="flex items-center gap-1.5 font-mono text-[10px]">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
-                      <span className="text-amber-400 font-bold uppercase">Tahmin Yapıyor...</span>
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                      <span className="text-amber-400 font-bold uppercase tracking-wider">{oppCount > 0 ? `${oppCount}/6 Tahmin` : 'Tahmin Yapıyor...'}</span>
                     </div>
                   </div>
                 );
-              })}
+              })()}
+
+              {/* Pes Et / Maçtan Çık Button */}
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={handleLeaveMatch}
+                  className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold rounded-2xl text-xs uppercase tracking-wider transition-all duration-150 active:scale-95 shadow-md shadow-rose-600/30 flex items-center justify-center gap-2 mx-auto cursor-pointer border border-rose-400/30"
+                  id="waiting-card-surrender-button"
+                >
+                  <Flag size={14} className="stroke-[2.5]" />
+                  <span>Pes Et / Maçtan Çık</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -6265,11 +6532,14 @@ export default function App() {
                           </div>
                           <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest mt-1.5 font-mono">DÜELLO GALİBİ</span>
                           <h2 className="text-xl font-black text-[#FAF6E9] uppercase tracking-wide leading-none mt-0.5">ZAFER SENİN!</h2>
-                          {opponentLeftDuringMatch && (
-                            <span className="text-[11px] font-bold text-rose-400 bg-rose-500/10 px-2.5 py-0.5 rounded-full border border-rose-500/20 mt-1.5 inline-block">
-                              Rakip oyundan çıktı!
+                          {(opponentLeftDuringMatch || activeMatch?.winReason === 'opponent_left') && (
+                            <span className="text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20 mt-1.5 inline-block">
+                              Rakip maçtan ayrıldı, maçı kazandınız!
                             </span>
                           )}
+                          <div className="flex items-center gap-2 mt-2 bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full text-xs font-black text-amber-300">
+                            <span>+{(opponentLeftDuringMatch || activeMatch?.winReason === 'opponent_left') ? 3 : calculateDynamicScore(activeMatch?.wordLength || wordLength || 5, 0, attempts.length || 1, false)} Puan</span>
+                          </div>
                         </div>
                       ) : isDraw ? (
                         <div className="relative flex flex-col items-center">
@@ -6771,6 +7041,7 @@ export default function App() {
             setShowFriendsModal(false);
             handleChallengePlayer(player, wLen);
           }}
+          isChallengePending={Boolean(pendingSentChallenge)}
           duelWordLength={duelWordLength}
           wordLength={wordLength}
           showToast={showToast}
@@ -6816,6 +7087,49 @@ export default function App() {
         soundEnabled={settings.soundEnabled}
       />
 
+      {/* Sent Challenge Waiting Overlay Modal (Sender Side) */}
+      {pendingSentChallenge && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 animate-fadeIn">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" />
+          <div className="bg-[#161D2B] border-2 border-amber-500/50 rounded-3xl p-6 max-w-sm w-full shadow-[0_0_50px_rgba(245,158,11,0.3)] relative z-10 text-white text-center space-y-4 animate-scaleUp">
+            <div className="relative w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 mx-auto flex items-center justify-center text-amber-400">
+              <Swords size={32} className="animate-pulse" />
+              <span className="absolute -top-2 -right-2 bg-amber-500 text-slate-950 text-xs font-black font-mono w-7 h-7 rounded-full flex items-center justify-center shadow-lg border-2 border-[#161D2B]">
+                {pendingSentChallenge.remainingSeconds}s
+              </span>
+            </div>
+            <div>
+              <span className="text-[10px] font-black uppercase tracking-widest text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1 rounded-full font-mono">
+                ⏳ YANIT BEKLENİYOR
+              </span>
+              <h3 className="text-lg font-black text-white mt-2">
+                {pendingSentChallenge.challengedName}
+              </h3>
+              <p className="text-xs text-slate-300 mt-1">
+                Meydan okuma isteği gönderildi. Yanıt bekleniyor...
+              </p>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700">
+              <div 
+                className="bg-gradient-to-r from-amber-400 to-yellow-500 h-full transition-all duration-1000 ease-linear"
+                style={{ width: `${(pendingSentChallenge.remainingSeconds / 10) * 100}%` }}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleCancelOrTimeoutSentChallenge(pendingSentChallenge.id, false)}
+              className="w-full py-2.5 px-4 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 text-xs font-black uppercase tracking-wider transition cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <X size={15} />
+              İptal Et
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Live Incoming Challenge Popup Modal */}
       {activeChallenges && activeChallenges.length > 0 && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 animate-fadeIn">
@@ -6831,10 +7145,13 @@ export default function App() {
             {/* Content */}
             <div className="relative z-10 text-center space-y-4">
               {/* Badge Icon */}
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 via-yellow-400 to-amber-500 p-0.5 mx-auto shadow-xl shadow-amber-500/30 animate-pulse">
+              <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 via-yellow-400 to-amber-500 p-0.5 mx-auto shadow-xl shadow-amber-500/30 animate-pulse">
                 <div className="w-full h-full bg-[#161D2B] rounded-[14px] flex items-center justify-center text-amber-400">
                   <Swords size={32} className="stroke-[2.5]" />
                 </div>
+                <span className="absolute -top-2 -right-2 bg-rose-500 text-white text-xs font-black font-mono w-7 h-7 rounded-full flex items-center justify-center border-2 border-[#161D2B] shadow-md animate-bounce">
+                  {activeChallenges[0].remainingSeconds ?? 10}s
+                </span>
               </div>
 
               <div className="space-y-1.5">
@@ -6849,6 +7166,14 @@ export default function App() {
                 <p className="text-xs text-gray-300 leading-relaxed font-medium">
                   Seni <span className="text-amber-400 font-black font-mono">{activeChallenges[0].wordLength || 5} Harfli</span> kelime düellosuna davet ediyor!
                 </p>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700">
+                <div 
+                  className="bg-gradient-to-r from-emerald-400 via-amber-400 to-rose-500 h-full transition-all duration-1000 ease-linear"
+                  style={{ width: `${((activeChallenges[0].remainingSeconds ?? 10) / 10) * 100}%` }}
+                />
               </div>
 
               {/* Action Buttons */}
